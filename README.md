@@ -57,6 +57,39 @@ python3 -m restricted_jira_mcp.server
 
 This environment currently has `requests` installed but no `pip`, so the smoke test can run without installing anything. The MCP server itself requires the `mcp` Python package.
 
+## GitHub Copilot MCP configuration
+
+In GitHub Copilot's MCP server setup form, use these values:
+
+```text
+Server Name:
+restricted-jira
+
+Server Type:
+STDIO
+
+Command:
+python3 -m restricted_jira_mcp.server
+
+Environment Variables:
+PYTHONPATH=/absolute/path/to/restricted-jira-mcp/src
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-token
+JIRA_ALLOWED_PROJECTS=ISD
+
+Tools:
+*
+```
+
+If Copilot is not launched from the repository root, use an absolute command that changes into the repo first:
+
+```bash
+bash -lc 'cd /absolute/path/to/restricted-jira-mcp && PYTHONPATH=src python3 -m restricted_jira_mcp.server'
+```
+
+Keep the Jira token only in Copilot's local MCP configuration. Do not commit it to this repository.
+
 ## Tools exposed
 
 - `jira_get_issue(issue_key)`
