@@ -120,6 +120,45 @@ class JiraClientTests(unittest.TestCase):
         with self.assertRaises(PolicyError):
             client(session).update_issue("ISD-5444", {"fixVersions": []})
 
+    def test_create_issue_sets_parent_epic(self):
+        session = FakeSession()
+        session.next_post = FakeResponse(201, {"key": "ISD-5445"})
+
+        result = client(session).create_issue(
+            project_key="ISD",
+            issue_type="Story",
+            summary="Example story",
+            parent_epic_key="isd-5444",
+        )
+
+        request_json = session.calls[0][2]["json"]
+        self.assertEqual(result["key"], "ISD-5445")
+        self.assertEqual(request_json["fields"]["parent"], {"key": "ISD-5444"})
+
+    def test_create_issue_rejects_disallowed_parent_epic_before_http(self):
+        session = FakeSession()
+
+        with self.assertRaises(PolicyError):
+            client(session).create_issue(
+                project_key="ISD",
+                issue_type="Story",
+                summary="Example story",
+                parent_epic_key="NDA-1",
+            )
+
+        self.assertEqual(session.calls, [])
+
+    def test_update_normalizes_and_validates_parent(self):
+        session = FakeSession()
+
+        client(session).update_issue("ISD-5445", {"parent": "isd-5444"})
+
+        request_json = session.calls[0][2]["json"]
+        self.assertEqual(request_json["fields"]["parent"], {"key": "ISD-5444"})
+
+        with self.assertRaises(PolicyError):
+            client(session).update_issue("ISD-5445", {"parent": {"key": "NDA-1"}})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,11 @@ class JiraPolicy:
             raise PolicyError(f"Invalid Jira issue key: {issue_key}")
         return match.group(1)
 
+    def normalize_issue_key(self, issue_key: str) -> str:
+        normalized = issue_key.upper()
+        self.ensure_issue_allowed(normalized)
+        return normalized
+
     def ensure_project_allowed(self, project_key: str) -> str:
         normalized = project_key.upper()
         if normalized not in self.allowed_projects:
@@ -80,6 +85,7 @@ class JiraPolicy:
             "assignee",
             "labels",
             "issuetype",
+            "parent",
         }
         rejected = sorted(
             field
@@ -88,4 +94,11 @@ class JiraPolicy:
         )
         if rejected:
             raise PolicyError(f"Unsupported Jira fields: {', '.join(rejected)}")
+        if "parent" in fields:
+            self._validate_parent_field(fields["parent"])
         return dict(fields)
+
+    def _validate_parent_field(self, parent: Any) -> None:
+        if not isinstance(parent, dict) or not isinstance(parent.get("key"), str):
+            raise PolicyError("Jira parent field must be an object with a key")
+        self.ensure_issue_allowed(parent["key"])

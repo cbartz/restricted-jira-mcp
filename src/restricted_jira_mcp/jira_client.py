@@ -106,6 +106,7 @@ class JiraClient:
         priority: str | None = None,
         assignee_account_id: str | None = None,
         labels: list[str] | None = None,
+        parent_epic_key: str | None = None,
         custom_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         project = self.policy.ensure_project_allowed(project_key)
@@ -122,6 +123,8 @@ class JiraClient:
             fields["assignee"] = {"accountId": assignee_account_id}
         if labels:
             fields["labels"] = labels
+        if parent_epic_key:
+            fields["parent"] = {"key": self.policy.normalize_issue_key(parent_epic_key)}
         if custom_fields:
             fields.update(self.policy.validate_update_fields(custom_fields))
 
@@ -187,6 +190,10 @@ def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
         normalized["priority"] = {"name": normalized["priority"]}
     if isinstance(normalized.get("assignee"), str):
         normalized["assignee"] = {"accountId": normalized["assignee"]}
+    if isinstance(normalized.get("parent"), str):
+        normalized["parent"] = {"key": normalized["parent"].upper()}
+    if isinstance(normalized.get("parent"), dict) and isinstance(normalized["parent"].get("key"), str):
+        normalized["parent"] = {"key": normalized["parent"]["key"].upper()}
     return normalized
 
 

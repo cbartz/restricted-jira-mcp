@@ -34,6 +34,17 @@ class JiraPolicyTests(unittest.TestCase):
             {"customfield_12345": "ok"},
         )
 
+    def test_validates_parent_field_project(self):
+        policy = JiraPolicy.create(("ISD",))
+
+        self.assertEqual(
+            policy.validate_update_fields({"parent": {"key": "ISD-5444"}}),
+            {"parent": {"key": "ISD-5444"}},
+        )
+
+        with self.assertRaisesRegex(PolicyError, "NDA"):
+            policy.validate_update_fields({"parent": {"key": "NDA-1"}})
+
 
 if __name__ == "__main__":
     unittest.main()

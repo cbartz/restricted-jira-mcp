@@ -34,6 +34,7 @@ def create_server() -> Any:
         priority: str | None = None,
         assignee_account_id: str | None = None,
         labels: list[str] | None = None,
+        parent_epic_key: str | None = None,
         custom_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return client.create_issue(
@@ -44,6 +45,7 @@ def create_server() -> Any:
             priority=priority,
             assignee_account_id=assignee_account_id,
             labels=labels,
+            parent_epic_key=parent_epic_key,
             custom_fields=custom_fields,
         )
 

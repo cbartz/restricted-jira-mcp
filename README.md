@@ -94,11 +94,24 @@ Keep the Jira token only in Copilot's local MCP configuration. Do not commit it 
 
 - `jira_get_issue(issue_key)`
 - `jira_search(jql, max_results=25)`
-- `jira_create_issue(project_key, issue_type, summary, ...)`
+- `jira_create_issue(project_key, issue_type, summary, ..., parent_epic_key=None)`
 - `jira_update_issue(issue_key, fields)`
 - `jira_add_comment(issue_key, body)`
 
 Writes are deliberately limited to create, update, and comment. This v1 does not support transitions, attachments, deletes, bulk edits, issue links, watchers, worklogs, sprint/version changes, or admin operations.
+
+For modern Jira Cloud projects, create a story under an epic by passing `parent_epic_key`:
+
+```text
+jira_create_issue(
+  project_key="ISD",
+  issue_type="Story",
+  summary="Add the requested workflow",
+  parent_epic_key="ISD-5444"
+)
+```
+
+The parent epic key is normalized to uppercase and must belong to a project in `JIRA_ALLOWED_PROJECTS`.
 
 ## GitHub
 
