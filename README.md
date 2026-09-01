@@ -131,12 +131,6 @@ The link reads in the direction `from_issue_key <link type outward wording> to_i
 
 `jira_get_issue` now returns a `links` list. Links pointing at a non-allowlisted project are removed from the response, so an ISD issue linked to an NDA issue reveals neither its key nor its summary.
 
-Verify against real Jira:
-
-```bash
-python3 scripts/smoke_link_issues.py ISD-5444 ISREQ-5090
-```
-
 ## GitHub
 
 This workspace has a read-only placeholder `.git`, so this repo uses an explicit Git directory at `.git-data`.
