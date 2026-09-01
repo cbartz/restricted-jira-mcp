@@ -54,6 +54,20 @@ def create_server() -> Any:
         return client.update_issue(issue_key, fields)
 
     @mcp.tool()
+    def jira_link_issues(
+        from_issue_key: str,
+        to_issue_key: str,
+        link_type: str = "Relates",
+    ) -> dict[str, str]:
+        """Link two allowlisted issues, reading as "from_issue_key <link_type outward> to_issue_key"."""
+        return client.link_issues(from_issue_key, to_issue_key, link_type=link_type)
+
+    @mcp.tool()
+    def jira_link_types() -> dict[str, Any]:
+        """List the link type names this Jira site accepts, with their direction wording."""
+        return client.link_types()
+
+    @mcp.tool()
     def jira_add_comment(issue_key: str, body: str) -> dict[str, Any]:
         return client.add_comment(issue_key, body)
 

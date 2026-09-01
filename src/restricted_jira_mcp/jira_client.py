@@ -22,6 +22,8 @@ DEFAULT_FIELDS = [
     "description",
 ]
 
+ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks"]
+
 
 class JiraClientError(RuntimeError):
     pass
@@ -58,12 +60,14 @@ class JiraClient:
         self.policy.ensure_issue_allowed(issue_key)
         response = self.session.get(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}"),
-            params={"fields": ",".join(DEFAULT_FIELDS)},
+            params={"fields": ",".join(ISSUE_FIELDS)},
             timeout=30,
         )
         payload = self._json_response(response)
         self.policy.ensure_response_issue_allowed(payload)
-        return compact_issue(payload)
+        issue = compact_issue(payload)
+        issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
+        return issue
 
     def search(self, jql: str | None, max_results: int = 25) -> dict[str, Any]:
         capped = max(1, min(max_results, 50))
@@ -146,6 +150,45 @@ class JiraClient:
         self._raise_for_status(response)
         return {"status": "updated", "issue_key": issue_key.upper()}
 
+    def link_issues(
+        self,
+        from_issue_key: str,
+        to_issue_key: str,
+        link_type: str = "Relates",
+    ) -> dict[str, str]:
+        inward = self.policy.normalize_issue_key(from_issue_key)
+        outward = self.policy.normalize_issue_key(to_issue_key)
+        response = self.session.post(
+            self._url("/rest/api/3/issueLink"),
+            json={
+                "type": {"name": link_type},
+                "inwardIssue": {"key": inward},
+                "outwardIssue": {"key": outward},
+            },
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        return {
+            "status": "linked",
+            "from_issue_key": inward,
+            "to_issue_key": outward,
+            "link_type": link_type,
+        }
+
+    def link_types(self) -> dict[str, Any]:
+        response = self.session.get(self._url("/rest/api/3/issueLinkType"), timeout=30)
+        payload = self._json_response(response)
+        return {
+            "link_types": [
+                {
+                    "name": link_type.get("name"),
+                    "inward": link_type.get("inward"),
+                    "outward": link_type.get("outward"),
+                }
+                for link_type in payload.get("issueLinkTypes", [])
+            ]
+        }
+
     def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
         self.policy.ensure_issue_allowed(issue_key)
         response = self.session.post(
@@ -154,6 +197,33 @@ class JiraClient:
             timeout=30,
         )
         return self._json_response(response)
+
+    def _visible_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return one entry per linked issue, dropping links outside the allowlist.
+
+        A linked issue stub carries no project field, so the key prefix decides
+        whether the link may be revealed at all.
+        """
+        visible = []
+        for link in links:
+            link_type = link.get("type") or {}
+            for direction in ("outwardIssue", "inwardIssue"):
+                other = link.get(direction)
+                if not other or not self.policy.is_issue_allowed(other.get("key") or ""):
+                    continue
+                other_fields = other.get("fields") or {}
+                visible.append(
+                    {
+                        "link_type": link_type.get("name"),
+                        "relation": link_type.get(
+                            "outward" if direction == "outwardIssue" else "inward"
+                        ),
+                        "issue_key": other.get("key"),
+                        "summary": other_fields.get("summary"),
+                        "status": (other_fields.get("status") or {}).get("name"),
+                    }
+                )
+        return visible
 
     def _url(self, path: str) -> str:
         return f"{self.config.base_url}{path}"

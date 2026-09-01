@@ -4,7 +4,7 @@ A local Jira MCP server that enforces a project allowlist before Jira data is re
 
 ## Why this exists
 
-Atlassian's hosted MCP follows the signed-in user's Jira permissions. If your user can see NDA projects in Jira, prompt instructions are not a security boundary. This server talks to Jira REST directly and only exposes projects listed in `JIRA_ALLOWED_PROJECTS`.
+Atlassian's hosted MCP follows the signed-in user's Jira permissions. If your user can see NDA projects in Jira, prompt instructions are not a security boundary. This server talks to Jira REST directly and only exposes projects listed in `JIRA_ALLOWED_PROJECTS`. The allowlist is a comma-separated list, so several projects can be trusted at once (for example `ISD,ISREQ`).
 
 ## Configuration
 
@@ -14,7 +14,7 @@ Set these environment variables locally:
 export JIRA_BASE_URL="https://your-company.atlassian.net"
 export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="your-token"
-export JIRA_ALLOWED_PROJECTS="ISD"
+export JIRA_ALLOWED_PROJECTS="ISD,ISREQ"
 ```
 
 Optional:
@@ -76,7 +76,7 @@ PYTHONPATH=/absolute/path/to/restricted-jira-mcp/src
 JIRA_BASE_URL=https://your-company.atlassian.net
 JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-token
-JIRA_ALLOWED_PROJECTS=ISD
+JIRA_ALLOWED_PROJECTS=ISD,ISREQ
 
 Tools:
 *
@@ -96,9 +96,11 @@ Keep the Jira token only in Copilot's local MCP configuration. Do not commit it 
 - `jira_search(jql, max_results=25)`
 - `jira_create_issue(project_key, issue_type, summary, ..., parent_epic_key=None)`
 - `jira_update_issue(issue_key, fields)`
+- `jira_link_issues(from_issue_key, to_issue_key, link_type="Relates")`
+- `jira_link_types()`
 - `jira_add_comment(issue_key, body)`
 
-Writes are deliberately limited to create, update, and comment. This v1 does not support transitions, attachments, deletes, bulk edits, issue links, watchers, worklogs, sprint/version changes, or admin operations.
+Writes are deliberately limited to create, update, comment, and link. This v1 does not support transitions, attachments, deletes (including removing an existing link), bulk edits, watchers, worklogs, sprint/version changes, or admin operations.
 
 For modern Jira Cloud projects, create a story under an epic by passing `parent_epic_key`:
 
@@ -112,6 +114,28 @@ jira_create_issue(
 ```
 
 The parent epic key is normalized to uppercase and must belong to a project in `JIRA_ALLOWED_PROJECTS`.
+
+## Linking issues
+
+Cross-project references use `jira_link_issues`, not `jira_update_issue`. Jira does not accept `issuelinks` as a plain field write, so that field is rejected with a pointer to this tool.
+
+```text
+jira_link_issues(
+  from_issue_key="ISD-5444",
+  to_issue_key="ISREQ-5090",
+  link_type="Relates"
+)
+```
+
+The link reads in the direction `from_issue_key <link type outward wording> to_issue_key`, so the example above records "ISD-5444 relates to ISREQ-5090". Both keys must belong to allowlisted projects, and both are checked before any Jira request. Link type names are site-specific; `jira_link_types()` lists the names this site accepts along with their inward and outward wording.
+
+`jira_get_issue` now returns a `links` list. Links pointing at a non-allowlisted project are removed from the response, so an ISD issue linked to an NDA issue reveals neither its key nor its summary.
+
+Verify against real Jira:
+
+```bash
+python3 scripts/smoke_link_issues.py ISD-5444 ISREQ-5090
+```
 
 ## GitHub
 

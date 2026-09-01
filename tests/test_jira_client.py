@@ -63,15 +63,22 @@ def issue_payload(key: str, project: str) -> dict[str, Any]:
     }
 
 
-def client(session: FakeSession) -> JiraClient:
+def client(session: FakeSession, projects: tuple[str, ...] = ("ISD",)) -> JiraClient:
     config = JiraConfig(
         base_url="https://example.atlassian.net",
         email="user@example.com",
         api_token="token",
-        allowed_projects=("ISD",),
+        allowed_projects=projects,
         allowed_custom_fields=("customfield_12345",),
     )
-    return JiraClient(config, JiraPolicy.create(("ISD",), ("customfield_12345",)), session)
+    return JiraClient(config, JiraPolicy.create(projects, ("customfield_12345",)), session)
+
+
+def link_payload(direction: str, key: str) -> dict[str, Any]:
+    return {
+        "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+        direction: {"key": key, "fields": {"summary": "Linked issue", "status": {"name": "To Do"}}},
+    }
 
 
 class JiraClientTests(unittest.TestCase):
@@ -147,6 +154,59 @@ class JiraClientTests(unittest.TestCase):
             )
 
         self.assertEqual(session.calls, [])
+
+    def test_link_issues_posts_normalized_keys(self):
+        session = FakeSession()
+        session.next_post = FakeResponse(201)
+
+        result = client(session, ("ISD", "ISREQ")).link_issues("isd-5444", "isreq-5090")
+
+        method, url, kwargs = session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertTrue(url.endswith("/rest/api/3/issueLink"))
+        self.assertEqual(
+            kwargs["json"],
+            {
+                "type": {"name": "Relates"},
+                "inwardIssue": {"key": "ISD-5444"},
+                "outwardIssue": {"key": "ISREQ-5090"},
+            },
+        )
+        self.assertEqual(result["status"], "linked")
+
+    def test_link_issues_rejects_disallowed_projects_before_http(self):
+        session = FakeSession()
+
+        with self.assertRaises(PolicyError):
+            client(session).link_issues("ISD-5444", "ISREQ-5090")
+        with self.assertRaises(PolicyError):
+            client(session).link_issues("NDA-1", "ISD-5444")
+
+        self.assertEqual(session.calls, [])
+
+    def test_get_issue_hides_links_to_disallowed_projects(self):
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["issuelinks"] = [
+            link_payload("outwardIssue", "ISREQ-5090"),
+            link_payload("inwardIssue", "NDA-1"),
+        ]
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session, ("ISD", "ISREQ")).get_issue("ISD-5444")
+
+        self.assertEqual(
+            issue["links"],
+            [
+                {
+                    "link_type": "Relates",
+                    "relation": "relates to",
+                    "issue_key": "ISREQ-5090",
+                    "summary": "Linked issue",
+                    "status": "To Do",
+                }
+            ],
+        )
 
     def test_update_normalizes_and_validates_parent(self):
         session = FakeSession()

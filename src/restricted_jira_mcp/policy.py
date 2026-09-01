@@ -57,6 +57,13 @@ class JiraPolicy:
     def ensure_issue_allowed(self, issue_key: str) -> str:
         return self.ensure_project_allowed(self.project_from_issue_key(issue_key))
 
+    def is_issue_allowed(self, issue_key: str) -> bool:
+        try:
+            self.ensure_issue_allowed(issue_key)
+        except PolicyError:
+            return False
+        return True
+
     def ensure_response_issue_allowed(self, issue: dict[str, Any]) -> None:
         project_key = (
             issue.get("fields", {})
@@ -87,6 +94,10 @@ class JiraPolicy:
             "issuetype",
             "parent",
         }
+        if "issuelinks" in fields:
+            raise PolicyError(
+                "Issue links cannot be set through fields; use the jira_link_issues tool"
+            )
         rejected = sorted(
             field
             for field in fields

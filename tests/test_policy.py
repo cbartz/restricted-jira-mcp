@@ -34,6 +34,19 @@ class JiraPolicyTests(unittest.TestCase):
             {"customfield_12345": "ok"},
         )
 
+    def test_rejects_issuelinks_update_field_with_tool_hint(self):
+        policy = JiraPolicy.create(("ISD",))
+
+        with self.assertRaisesRegex(PolicyError, "jira_link_issues"):
+            policy.validate_update_fields({"issuelinks": []})
+
+    def test_reports_issue_allowlist_membership(self):
+        policy = JiraPolicy.create(("ISD", "ISREQ"))
+
+        self.assertTrue(policy.is_issue_allowed("isreq-5090"))
+        self.assertFalse(policy.is_issue_allowed("NDA-1"))
+        self.assertFalse(policy.is_issue_allowed("not-a-key"))
+
     def test_validates_parent_field_project(self):
         policy = JiraPolicy.create(("ISD",))
 
