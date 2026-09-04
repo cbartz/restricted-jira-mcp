@@ -93,6 +93,7 @@ Keep the Jira token only in Copilot's local MCP configuration. Do not commit it 
 ## Tools exposed
 
 - `jira_get_issue(issue_key)`
+- `jira_get_comments(issue_key, max_results=25, start_at=0)`
 - `jira_search(jql, max_results=25)`
 - `jira_create_issue(project_key, issue_type, summary, ..., parent_epic_key=None)`
 - `jira_update_issue(issue_key, fields)`
@@ -114,6 +115,26 @@ jira_create_issue(
 ```
 
 The parent epic key is normalized to uppercase and must belong to a project in `JIRA_ALLOWED_PROJECTS`.
+
+## Reading comments
+
+`jira_get_comments` returns an issue's comments oldest first, with the author, the
+timestamps, and the body flattened from ADF to plain text (truncated at 2000
+characters). The issue key is checked against the allowlist before any Jira
+request, exactly like `jira_get_issue`.
+
+```text
+jira_get_comments(issue_key="ISD-5444", max_results=25, start_at=0)
+```
+
+Long comment threads are paged: `max_results` is capped at 50 per call, and the
+response echoes `start_at`, `max_results`, and `total` so the next page can be
+requested with `start_at` advanced.
+
+Each comment carries two fields worth reading before quoting it elsewhere:
+`visibility` is `null` for a normal comment and otherwise names the role or group
+the comment is restricted to (for example `role: Administrators`), and `public` is
+`false` for a Jira Service Management internal comment that customers cannot see.
 
 ## Linking issues
 

@@ -81,6 +81,20 @@ def link_payload(direction: str, key: str) -> dict[str, Any]:
     }
 
 
+def comment_payload(comment_id: str, text: str) -> dict[str, Any]:
+    return {
+        "id": comment_id,
+        "author": {
+            "accountId": "acc-1",
+            "displayName": "Alice",
+            "emailAddress": "alice@example.com",
+        },
+        "body": adf_doc(text),
+        "created": "2026-01-01T10:00:00.000+0000",
+        "updated": "2026-01-02T10:00:00.000+0000",
+    }
+
+
 class JiraClientTests(unittest.TestCase):
     def test_get_issue_rejects_disallowed_key_before_http(self):
         session = FakeSession()
@@ -207,6 +221,69 @@ class JiraClientTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_get_comments_rejects_disallowed_key_before_http(self):
+        session = FakeSession()
+
+        with self.assertRaises(PolicyError):
+            client(session).get_comments("NDA-123")
+
+        self.assertEqual(session.calls, [])
+
+    def test_get_comments_returns_paged_flattened_comments(self):
+        session = FakeSession()
+        session.next_get = FakeResponse(
+            200,
+            {
+                "startAt": 0,
+                "maxResults": 50,
+                "total": 1,
+                "comments": [comment_payload("10001", "Looks good to me")],
+            },
+        )
+
+        result = client(session).get_comments("isd-5444", max_results=200, start_at=5)
+
+        method, url, kwargs = session.calls[0]
+        self.assertEqual(method, "GET")
+        self.assertTrue(url.endswith("/rest/api/3/issue/ISD-5444/comment"))
+        self.assertEqual(
+            kwargs["params"],
+            {"startAt": 5, "maxResults": 50, "orderBy": "created"},
+        )
+        self.assertEqual(result["issue_key"], "ISD-5444")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(
+            result["comments"],
+            [
+                {
+                    "id": "10001",
+                    "author": {
+                        "accountId": "acc-1",
+                        "displayName": "Alice",
+                        "emailAddress": "alice@example.com",
+                    },
+                    "body": "Looks good to me",
+                    "created": "2026-01-01T10:00:00.000+0000",
+                    "updated": "2026-01-02T10:00:00.000+0000",
+                    "visibility": None,
+                    "public": True,
+                }
+            ],
+        )
+
+    def test_get_comments_reports_restricted_visibility(self):
+        session = FakeSession()
+        restricted = comment_payload("10002", "Internal note")
+        restricted["visibility"] = {"type": "role", "value": "Administrators"}
+        restricted["jsdPublic"] = False
+        session.next_get = FakeResponse(200, {"total": 1, "comments": [restricted]})
+
+        result = client(session).get_comments("ISD-5444")
+
+        comment = result["comments"][0]
+        self.assertEqual(comment["visibility"], "role: Administrators")
+        self.assertFalse(comment["public"])
 
     def test_update_normalizes_and_validates_parent(self):
         session = FakeSession()

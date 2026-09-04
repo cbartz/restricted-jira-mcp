@@ -24,6 +24,9 @@ DEFAULT_FIELDS = [
 
 ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks"]
 
+MAX_COMMENTS_PER_PAGE = 50
+COMMENT_BODY_LIMIT = 2000
+
 
 class JiraClientError(RuntimeError):
     pass
@@ -68,6 +71,32 @@ class JiraClient:
         issue = compact_issue(payload)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
         return issue
+
+    def get_comments(
+        self,
+        issue_key: str,
+        max_results: int = 25,
+        start_at: int = 0,
+    ) -> dict[str, Any]:
+        self.policy.ensure_issue_allowed(issue_key)
+        capped = max(1, min(max_results, MAX_COMMENTS_PER_PAGE))
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
+            params={
+                "startAt": max(0, start_at),
+                "maxResults": capped,
+                "orderBy": "created",
+            },
+            timeout=30,
+        )
+        payload = self._json_response(response)
+        return {
+            "issue_key": issue_key.upper(),
+            "start_at": payload.get("startAt"),
+            "max_results": payload.get("maxResults"),
+            "total": payload.get("total"),
+            "comments": [compact_comment(comment) for comment in payload.get("comments", [])],
+        }
 
     def search(self, jql: str | None, max_results: int = 25) -> dict[str, Any]:
         capped = max(1, min(max_results, 50))
@@ -299,6 +328,18 @@ def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": comment.get("id"),
+        "author": _display_user(comment.get("author")),
+        "body": _adf_excerpt(comment.get("body"), limit=COMMENT_BODY_LIMIT),
+        "created": comment.get("created"),
+        "updated": comment.get("updated"),
+        "visibility": _comment_visibility(comment.get("visibility")),
+        "public": comment.get("jsdPublic", True),
+    }
+
+
 def _display_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
     if not user:
         return None
@@ -307,6 +348,13 @@ def _display_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
         "displayName": user.get("displayName"),
         "emailAddress": user.get("emailAddress"),
     }
+
+
+def _comment_visibility(visibility: dict[str, Any] | None) -> str | None:
+    """Describe who a restricted comment is limited to, so the reader sees it is not public."""
+    if not visibility:
+        return None
+    return f"{visibility.get('type')}: {visibility.get('value')}"
 
 
 def _adf_excerpt(value: Any, limit: int = 800) -> str | None:

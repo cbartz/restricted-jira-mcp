@@ -22,6 +22,15 @@ def create_server() -> Any:
         return client.get_issue(issue_key)
 
     @mcp.tool()
+    def jira_get_comments(
+        issue_key: str,
+        max_results: int = 25,
+        start_at: int = 0,
+    ) -> dict[str, Any]:
+        """Read comments on an allowlisted issue, oldest first, paged via start_at."""
+        return client.get_comments(issue_key, max_results=max_results, start_at=start_at)
+
+    @mcp.tool()
     def jira_search(jql: str = "", max_results: int = 25) -> dict[str, Any]:
         return client.search(jql, max_results=max_results)
 
