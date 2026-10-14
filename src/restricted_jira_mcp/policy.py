@@ -5,6 +5,58 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _split_order_by(jql: str) -> tuple[str, str | None]:
+    """
+    Split JQL at the last top-level ORDER BY clause (outside quotes).
+    
+    Args:
+        jql: The JQL string to split
+        
+    Returns:
+        tuple: (body, order_clause) where order_clause is None if no ORDER BY found
+    """
+    if not jql:
+        return "", None
+    
+    jql = jql.strip()
+    if not jql:
+        return "", None
+    
+    # Track quote states
+    in_single_quote = False
+    in_double_quote = False
+    
+    # Look for the last occurrence of ORDER BY outside quotes
+    order_by_pos = -1
+    
+    for i in range(len(jql) - 7):  # 7 is the length of "order by"
+        char = jql[i]
+        
+        # Track quotes
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+        elif char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+        
+        # Check for ORDER BY pattern when not in quotes
+        if (not in_single_quote and not in_double_quote and 
+            jql[i:i+8].lower() == "order by" and
+            (i == 0 or jql[i-1].isspace()) and
+            (i + 8 == len(jql) or jql[i+8].isspace() or jql[i+8] in "(,)") and
+            # Check that this is the last ORDER BY in the string
+            "order by" not in jql[i+8:].lower()):
+            
+            order_by_pos = i
+    
+    if order_by_pos == -1:
+        return jql, None
+    
+    body = jql[:order_by_pos].rstrip()
+    order_clause = jql[order_by_pos:]
+    
+    return body, order_clause
+
+
 ISSUE_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)-\d+$")
 PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -82,7 +134,22 @@ class JiraPolicy:
         base = self.project_jql_clause()
         if not jql or not jql.strip():
             return base
-        return f"{base} AND ({jql.strip()})"
+        
+        body, order_clause = _split_order_by(jql)
+        
+        if order_clause is None:
+            # No ORDER BY clause, use current behavior
+            if not body:
+                return base
+            return f"{base} AND ({body})"
+        else:
+            # Has ORDER BY clause
+            if not body:
+                # Empty body, just return base + ORDER BY (with space)
+                return f"{base} {order_clause}"
+            else:
+                # Has both body and ORDER BY (with space before ORDER BY)
+                return f"{base} AND ({body}) {order_clause}"
 
     def validate_update_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
         allowed = {
