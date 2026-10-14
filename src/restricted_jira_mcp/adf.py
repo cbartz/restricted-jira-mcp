@@ -27,46 +27,28 @@ def adf_to_text(value: Any) -> str | None:
     return ""
 
 
+_BLOCK_TYPES = frozenset(
+    {"paragraph", "heading", "bulletList", "orderedList", "codeBlock", "blockquote", "table"}
+)
+
+
 def _render_blocks(nodes: list[Any]) -> str:
-    """Render a list of block nodes with proper separation."""
+    """Render a list of block nodes with proper separation, in document order."""
     if not nodes:
         return ""
-    
     blocks = []
-    unknown_texts = []
-    
     for node in nodes:
         if isinstance(node, dict):
-            node_type = node.get("type")
-            if node_type == "paragraph" or node_type in ("heading", "bulletList", "orderedList", "codeBlock", "blockquote", "table"):
-                # These are known block types
-                block = _render_block(node)
-                if block:
-                    blocks.append(block)
-            else:
-                # Unknown node types - collect their text
-                inline = _render_inline_node(node)
-                if inline:
-                    unknown_texts.append(inline)
-    
-    # Join unknown nodes with spaces
-    unknown_content = " ".join(unknown_texts) if unknown_texts else ""
-    
-    # Combine blocks and unknown content
-    if blocks and unknown_content:
-        return "\n\n".join(blocks + [unknown_content])
-    elif blocks:
-        return "\n\n".join(blocks)
-    elif unknown_content:
-        return unknown_content
-    else:
-        return ""
+            block = _render_block(node)
+            if block:
+                blocks.append(block)
+    return "\n\n".join(blocks)
 
 
 def _render_block(node: dict[str, Any]) -> str:
     """Render a single block node."""
     node_type = node.get("type")
-    
+
     if node_type == "paragraph":
         return _render_inline(node.get("content", []))
     elif node_type == "heading":
@@ -88,17 +70,43 @@ def _render_block(node: dict[str, Any]) -> str:
             return f"```{language}\n{text}\n```"
         return f"```\n{text}\n```"
     elif node_type == "blockquote":
-        content = node.get("content", [])
-        text = _render_inline(content)
-        return f"> {text}".strip()
+        return _render_blockquote(node)
     elif node_type == "table":
         return _render_table(node)
     else:
-        # Unknown node type - render descendant text
-        content = node.get("content", [])
-        if content:
-            return _render_inline(content)
+        # Unknown node type: render block children structurally and inline
+        # children as text, keeping document order.
+        return _render_unknown_block(node)
+
+
+def _render_unknown_block(node: dict[str, Any]) -> str:
+    """Render an unknown block container so its children stay ordered and separated."""
+    parts = []
+    for child in node.get("content", []):
+        if not isinstance(child, dict):
+            continue
+        part = _render_block(child) if _is_block_node(child) else _render_inline_node(child)
+        if part:
+            parts.append(part)
+    return "\n\n".join(parts)
+
+
+def _is_block_node(node: dict[str, Any]) -> bool:
+    """True for known block types and unknown containers holding block children."""
+    if node.get("type") in _BLOCK_TYPES:
+        return True
+    return any(
+        isinstance(child, dict) and _is_block_node(child)
+        for child in node.get("content", [])
+    )
+
+
+def _render_blockquote(node: dict[str, Any]) -> str:
+    """Render a blockquote with every line carrying the quote prefix."""
+    inner = _render_blocks(node.get("content", []))
+    if not inner:
         return ""
+    return "\n".join(f"> {line}" if line else ">" for line in inner.split("\n"))
 
 
 def _render_list_item(item: dict[str, Any], prefix: str) -> str:
@@ -170,12 +178,11 @@ def _render_table(node: dict[str, Any]) -> str:
     header_texts = []
     for cell in header_cells:
         if isinstance(cell, dict):
-            text = _render_inline(cell.get("content", []))
-            header_texts.append(text)
-    
+            header_texts.append(_render_cell(cell))
+
     # Render separator row
     separator = "| " + " | ".join(["---"] * len(header_texts)) + " |"
-    
+
     # Render body rows
     body_texts = []
     for row in body_rows:
@@ -183,8 +190,7 @@ def _render_table(node: dict[str, Any]) -> str:
         row_texts = []
         for cell in cells:
             if isinstance(cell, dict):
-                text = _render_inline(cell.get("content", []))
-                row_texts.append(text)
+                row_texts.append(_render_cell(cell))
         if row_texts:
             body_texts.append("| " + " | ".join(row_texts) + " |")
     
@@ -195,6 +201,17 @@ def _render_table(node: dict[str, Any]) -> str:
     ] + body_texts
     
     return "\n".join(table_parts)
+
+
+def _render_cell(cell: dict[str, Any]) -> str:
+    """Render a table cell, joining its child blocks' texts with single spaces."""
+    parts = []
+    for child in cell.get("content", []):
+        if isinstance(child, dict):
+            part = _render_block(child)
+            if part:
+                parts.append(part)
+    return " ".join(parts)
 
 
 def _render_inline(nodes: list[Any]) -> str:

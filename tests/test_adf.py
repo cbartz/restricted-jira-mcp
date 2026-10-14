@@ -220,7 +220,120 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        self.assertEqual(result, "note @user")
+        self.assertEqual(result, "note\n\n@user")
+
+    def test_unknown_container_keeps_block_order_and_separation(self):
+        # A panel (unknown block container) between two paragraphs must render its
+        # child blocks structurally, in document order, joined like sibling blocks.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Intro"}]},
+                {
+                    "type": "panel",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "panel-first"}]},
+                        {"type": "paragraph", "content": [{"type": "text", "text": "panel-second"}]},
+                        {
+                            "type": "bulletList",
+                            "content": [
+                                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step one"}]}]},
+                                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step two"}]}]},
+                            ],
+                        },
+                    ],
+                },
+                {"type": "paragraph", "content": [{"type": "text", "text": "Outro"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "Intro\n\npanel-first\n\npanel-second\n\n- step one\n- step two\n\nOutro"
+        self.assertEqual(result, expected)
+
+    def test_unknown_container_nested_in_unknown_container_stays_structural(self):
+        # An expand inside a panel must also render block-aware: nested unknown
+        # containers may not fall back to jamming their paragraphs together.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Intro"}]},
+                {
+                    "type": "panel",
+                    "content": [
+                        {
+                            "type": "expand",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "e1"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "e2"}]},
+                            ],
+                        },
+                    ],
+                },
+                {"type": "paragraph", "content": [{"type": "text", "text": "Outro"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "Intro\n\ne1\n\ne2\n\nOutro"
+        self.assertEqual(result, expected)
+
+    def test_renders_multi_paragraph_blockquote_with_prefix_on_every_line(self):
+        # Each line of a blockquote keeps the "> " prefix; blank separators read ">".
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                        {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "> first\n>\n> second"
+        self.assertEqual(result, expected)
+
+    def test_renders_table_cell_with_multiple_paragraphs_space_joined(self):
+        # A cell holding two paragraphs must not jam their texts together.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Header"}]}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "a"}]},
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "b"}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "| Header |\n| --- |\n| a b |"
+        self.assertEqual(result, expected)
 
     def test_paragraph_with_em_and_code_marks(self):
         doc = {
