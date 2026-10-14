@@ -99,6 +99,68 @@ class HTTPTransportTests(unittest.TestCase):
         issue = json.loads(response.json()["result"]["content"][0]["text"])
         self.assertEqual(issue["key"], "ISD-5444")
 
+    def test_http_add_comment_accepts_raw_adf_dict_body(self):
+        # A raw ADF doc dict body must pass FastMCP's schema validation and reach
+        # Jira as exactly that dict, not die on "Input should be a valid string".
+        adf_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "raw adf"}]},
+            ],
+        }
+        response = self._post_tools_call(
+            "jira_add_comment",
+            {"issue_key": "ISD-5444", "body": adf_body},
+            {"Authorization": f"Bearer {CLIENT_TOKEN}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["result"].get("isError", False))
+        self.assertEqual(len(self.session.calls), 1)
+        method, url, kwargs = self.session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertTrue(url.endswith("/rest/api/3/issue/ISD-5444/comment"))
+        self.assertEqual(kwargs["json"], {"body": adf_body})
+
+    def test_http_create_issue_accepts_raw_adf_dict_description(self):
+        # A raw ADF doc dict description must pass schema validation unchanged too.
+        adf_description = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "raw adf"}]},
+            ],
+        }
+        response = self._post_tools_call(
+            "jira_create_issue",
+            {
+                "project_key": "ISD",
+                "issue_type": "Story",
+                "summary": "S",
+                "description": adf_description,
+            },
+            {"Authorization": f"Bearer {CLIENT_TOKEN}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["result"].get("isError", False))
+        self.assertEqual(len(self.session.calls), 1)
+        method, url, kwargs = self.session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertTrue(url.endswith("/rest/api/3/issue"))
+        self.assertEqual(
+            kwargs["json"],
+            {
+                "fields": {
+                    "project": {"key": "ISD"},
+                    "issuetype": {"name": "Story"},
+                    "summary": "S",
+                    "description": adf_description,
+                }
+            },
+        )
+
 
 class CreateServerTests(unittest.TestCase):
     """create_server() must register the full tool set on the injected client only."""

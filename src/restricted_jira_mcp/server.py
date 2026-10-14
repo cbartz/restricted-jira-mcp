@@ -78,7 +78,7 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
         project_key: str,
         issue_type: str,
         summary: str,
-        description: str | None = None,
+        description: str | dict | None = None,
         priority: str | None = None,
         assignee_account_id: str | None = None,
         labels: list[str] | None = None,
@@ -118,7 +118,7 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
         return client.link_types()
 
     @mcp.tool()
-    def jira_add_comment(issue_key: str, body: str) -> dict[str, Any]:
+    def jira_add_comment(issue_key: str, body: str | dict) -> dict[str, Any]:
         """Add a comment to an allowlisted issue; body accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.add_comment(issue_key, body)
 

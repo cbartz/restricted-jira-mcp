@@ -194,7 +194,7 @@ class JiraClient:
         project_key: str,
         issue_type: str,
         summary: str,
-        description: str | None = None,
+        description: str | dict | None = None,
         priority: str | None = None,
         assignee_account_id: str | None = None,
         labels: list[str] | None = None,
@@ -277,7 +277,7 @@ class JiraClient:
             ]
         }
 
-    def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+    def add_comment(self, issue_key: str, body: str | dict) -> dict[str, Any]:
         self.policy.ensure_issue_allowed(issue_key)
         response = self.session.post(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
