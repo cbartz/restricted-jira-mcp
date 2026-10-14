@@ -73,6 +73,8 @@ Client tokens are stored in `JIRA_MCP_CLIENT_TOKENS_FILE` as SHA-256 hex digests
 printf '%s' 'your-client-token' | sha256sum
 ```
 
+The hash file is read once at startup, so adding or removing a client token requires a server restart to take effect.
+
 For GitHub Copilot's MCP server setup form, use these values:
 
 ```text
@@ -205,8 +207,8 @@ Descriptions are 800-character excerpts with an explicit "description_truncated"
 ## Reading comments
 
 `jira_get_comments` returns an issue's comments oldest first, with the author, the
-timestamps, and the body flattened from ADF to plain text (truncated at 2000
-characters). The issue key is checked against the allowlist before any Jira
+timestamps, and the body flattened from ADF to plain text and returned in full (no
+truncation). The issue key is checked against the allowlist before any Jira
 request, exactly like `jira_get_issue`.
 
 ```text
