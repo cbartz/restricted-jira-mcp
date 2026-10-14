@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from markdown_it import MarkdownIt
+from markdown_it.tree import SyntaxTreeNode
+
 
 def adf_to_text(value: Any) -> str | None:
     """Render an ADF doc/node to full-length readable text.
@@ -243,3 +246,205 @@ def _render_inline_node(node: dict[str, Any]) -> str:
         # For other unknown inline nodes, try to render their content
         content = node.get("content", [])
         return _render_inline(content)
+
+
+# Parser for the Markdown → ADF write path: CommonMark plus the table and
+# strikethrough rules (no further extensions).
+_MARKDOWN_PARSER = MarkdownIt("commonmark").enable(["table", "strikethrough"])
+
+# Inline container node type → ADF mark type.
+_MARK_TYPES = {"strong": "strong", "em": "em", "s": "strike"}
+
+
+def markdown_to_adf(text: str) -> dict:
+    """Convert Markdown text to an ADF document.
+
+    Args:
+        text: Markdown source (CommonMark plus table/strikethrough rules)
+
+    Returns:
+        ADF document dict with type "doc" and one content node per markdown block
+    """
+    root = SyntaxTreeNode(_MARKDOWN_PARSER.parse(text))
+    return {"type": "doc", "version": 1, "content": _convert_blocks(root.children)}
+
+
+def as_adf(value: str | dict) -> dict:
+    """Coerce a value into an ADF document.
+
+    Args:
+        value: Markdown string (converted via markdown_to_adf) or an ADF doc
+            object (type "doc" with list content), which passes through unchanged
+
+    Returns:
+        ADF document dict
+
+    Raises:
+        ValueError: if value is neither a Markdown string nor an ADF doc object
+    """
+    if isinstance(value, str):
+        return markdown_to_adf(value)
+    if isinstance(value, dict) and value.get("type") == "doc" and isinstance(value.get("content"), list):
+        return value
+    raise ValueError(f"as_adf() expects a Markdown string or an ADF doc object, got {_describe_rejected(value)}")
+
+
+def _describe_rejected(value: Any) -> str:
+    """Name the rejected value's type for the as_adf error message."""
+    if isinstance(value, dict):
+        if "type" in value:
+            return f"dict with type {value['type']!r}"
+        return "dict"
+    return type(value).__name__
+
+
+def _convert_blocks(nodes: list[SyntaxTreeNode]) -> list[dict]:
+    """Convert tree nodes to ADF blocks, skipping anything that yields nothing."""
+    blocks = []
+    for node in nodes:
+        block = _convert_block(node)
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def _convert_block(node: SyntaxTreeNode) -> dict | None:
+    """Convert one block-level tree node to an ADF block node."""
+    node_type = node.type
+    if node_type == "heading":
+        return {"type": "heading", "attrs": {"level": int(node.tag[1])}, "content": _inline_content(node)}
+    if node_type == "paragraph":
+        return {"type": "paragraph", "content": _inline_content(node)}
+    if node_type == "bullet_list":
+        return {"type": "bulletList", "content": _convert_blocks(node.children)}
+    if node_type == "ordered_list":
+        start = node.attrGet("start")
+        order = int(start) if start is not None else 1
+        return {"type": "orderedList", "attrs": {"order": order}, "content": _convert_blocks(node.children)}
+    if node_type == "list_item":
+        return {"type": "listItem", "content": _convert_blocks(node.children)}
+    if node_type in ("fence", "code_block"):
+        return _convert_code_block(node)
+    if node_type == "blockquote":
+        return {"type": "blockquote", "content": _convert_blocks(node.children)}
+    if node_type == "table":
+        return _convert_table(node)
+    if node_type == "hr":
+        return {"type": "rule"}
+    # Unknown block: keep its descendant text so nothing is silently dropped.
+    text = _descendant_text(node)
+    if text:
+        return {"type": "paragraph", "content": [_text_node(text, [])]}
+    return None
+
+
+def _convert_code_block(node: SyntaxTreeNode) -> dict:
+    """Convert a fence or indented code_block node to a codeBlock node."""
+    text = node.content
+    if text.endswith("\n"):
+        text = text[:-1]
+    block: dict[str, Any] = {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
+    language = node.info.split()[0] if node.info.strip() else ""
+    if language:
+        block["attrs"] = {"language": language}
+    return block
+
+
+def _convert_table(node: SyntaxTreeNode) -> dict:
+    """Convert a table node, flattening thead/tbody/tr wrappers into tableRows."""
+    rows = []
+    for section in node.children:
+        if section.type in ("thead", "tbody"):
+            tr_nodes = section.children
+        elif section.type == "tr":
+            tr_nodes = [section]
+        else:
+            continue
+        for tr in tr_nodes:
+            cells = []
+            for cell in tr.children:
+                if cell.type == "th":
+                    cells.append({"type": "tableHeader", "content": _cell_content(cell)})
+                elif cell.type == "td":
+                    cells.append({"type": "tableCell", "content": _cell_content(cell)})
+            rows.append({"type": "tableRow", "content": cells})
+    return {"type": "table", "content": rows}
+
+
+def _cell_content(cell: SyntaxTreeNode) -> list[dict]:
+    """Convert a th/td node's children into the paragraphs it contains."""
+    paragraphs = []
+    for child in cell.children:
+        if child.type == "inline":
+            paragraphs.append({"type": "paragraph", "content": _inline_content(child)})
+        else:
+            block = _convert_block(child)
+            if block:
+                paragraphs.append(block)
+    return paragraphs
+
+
+def _inline_content(node: SyntaxTreeNode) -> list[dict]:
+    """Convert a block node's inline children to ADF inline nodes."""
+    inline_nodes = []
+    for child in node.children:
+        inline_nodes.extend(_convert_inline_node(child, []))
+    return inline_nodes
+
+
+def _convert_inline_nodes(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
+    """Convert an inline node's children, applying the accumulated marks."""
+    inline_nodes = []
+    for child in node.children:
+        inline_nodes.extend(_convert_inline_node(child, marks))
+    return inline_nodes
+
+
+def _convert_inline_node(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
+    """Convert one inline tree node to zero or more ADF inline nodes."""
+    node_type = node.type
+    if node_type == "inline":
+        return _convert_inline_nodes(node, marks)
+    if node_type in ("text", "text_special"):
+        # markdown-it emits empty text tokens around emphasis boundaries; skip them
+        if not node.content:
+            return []
+        return [_text_node(node.content, marks)]
+    if node_type == "code_inline":
+        return [_text_node(node.content, marks + [{"type": "code"}])]
+    if node_type in ("hardbreak", "softbreak"):
+        return [{"type": "hardBreak"}]
+    if node_type == "image":
+        # ADF media needs upload; images degrade to their alt text as a link to src
+        link_mark = {"type": "link", "attrs": {"href": node.attrGet("src")}}
+        return [_text_node(node.content, marks + [link_mark])]
+    if node_type == "link":
+        attrs: dict[str, Any] = {"href": node.attrGet("href")}
+        title = node.attrGet("title")
+        if title is not None:
+            attrs["title"] = title
+        return _convert_inline_nodes(node, marks + [{"type": "link", "attrs": attrs}])
+    if node_type in _MARK_TYPES:
+        return _convert_inline_nodes(node, marks + [{"type": _MARK_TYPES[node_type]}])
+    # Unknown inline node: recurse into children, or keep its text so nothing
+    # is silently dropped.
+    if node.children:
+        return _convert_inline_nodes(node, marks)
+    if node.content:
+        return [_text_node(node.content, marks)]
+    return []
+
+
+def _text_node(text: str, marks: list[dict]) -> dict:
+    """Build an ADF text node, omitting the marks key when there are none."""
+    node: dict[str, Any] = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = list(marks)
+    return node
+
+
+def _descendant_text(node: SyntaxTreeNode) -> str:
+    """Collect the plain text content of a subtree of tree nodes."""
+    if node.children:
+        return "".join(_descendant_text(child) for child in node.children)
+    return node.content or ""

@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",
   "mcp>=1.0",
+  "markdown-it-py>=3",
 ]
 
 [project.optional-dependencies]
