@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import requests
 
+from .adf import adf_to_text, as_adf
 from .config import JiraConfig
 from .policy import JiraPolicy
 
@@ -23,6 +25,9 @@ DEFAULT_FIELDS = [
 ]
 
 ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks"]
+
+MAX_COMMENTS_PER_PAGE = 50
+DESCRIPTION_EXCERPT_LIMIT = 800
 
 
 class JiraClientError(RuntimeError):
@@ -56,18 +61,101 @@ class JiraClient:
         )
         return cls(config=config, policy=policy)
 
+    def _requested_fields(self, base: list[str]) -> list[str]:
+        """Return requested fields with allowlisted custom fields added.
+        
+        Combines base fields with policy custom fields, preserving order and deduplicating.
+        """
+        # Start with base fields
+        fields = list(base)
+        
+        # Add allowlisted custom fields not already present
+        for field in self.policy.allowed_custom_fields:
+            if field not in fields:
+                fields.append(field)
+        
+        return fields
+
+    def _custom_fields_view(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Create a view of allowlisted custom fields with appropriate transformation.
+        
+        For each allowlisted field:
+        - dict with type == "doc" is rendered via adf_to_text (full length)
+        - any other dict or list is json.dumps-ed
+        - scalars pass through unchanged
+        
+        Returns a dict with field_id: readable_value.
+        """
+        custom_fields = {}
+        
+        for field_id in self.policy.allowed_custom_fields:
+            if field_id not in fields:
+                # Field not present in the issue - skip it (could alternatively include None)
+                continue
+                
+            value = fields[field_id]
+            
+            # Handle ADF documents
+            if isinstance(value, dict) and value.get("type") == "doc":
+                custom_fields[field_id] = adf_to_text(value)
+            # Handle other complex types (dict, list) by JSON dumping
+            elif isinstance(value, (dict, list)):
+                import json
+                custom_fields[field_id] = json.dumps(value)
+            # Handle scalars (string, number, boolean, etc.)
+            else:
+                custom_fields[field_id] = value
+        
+        return custom_fields
+
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         self.policy.ensure_issue_allowed(issue_key)
+        
+        # Get requested fields including allowlisted custom fields
+        requested_fields = self._requested_fields(ISSUE_FIELDS)
+        
         response = self.session.get(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}"),
-            params={"fields": ",".join(ISSUE_FIELDS)},
+            params={"fields": ",".join(requested_fields)},
             timeout=30,
         )
         payload = self._json_response(response)
         self.policy.ensure_response_issue_allowed(payload)
-        issue = compact_issue(payload)
+        issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
+        
+        # Add custom fields view
+        custom_fields = self._custom_fields_view(payload.get("fields", {}))
+        if custom_fields:
+            issue["custom_fields"] = custom_fields
+        
         return issue
+
+    def get_comments(
+        self,
+        issue_key: str,
+        max_results: int = 25,
+        start_at: int = 0,
+    ) -> dict[str, Any]:
+        self.policy.ensure_issue_allowed(issue_key)
+        capped = max(1, min(max_results, MAX_COMMENTS_PER_PAGE))
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
+            params={
+                "startAt": max(0, start_at),
+                "maxResults": capped,
+                "orderBy": "created",
+            },
+            timeout=30,
+        )
+        payload = self._json_response(response)
+        return {
+            "issue_key": issue_key.upper(),
+            "start_at": payload.get("startAt"),
+            "max_results": payload.get("maxResults"),
+            "total": payload.get("total"),
+            "comments": [compact_comment(comment) for comment in payload.get("comments", [])],
+        }
 
     def search(self, jql: str | None, max_results: int = 25) -> dict[str, Any]:
         capped = max(1, min(max_results, 50))
@@ -106,7 +194,7 @@ class JiraClient:
         project_key: str,
         issue_type: str,
         summary: str,
-        description: str | None = None,
+        description: str | dict | None = None,
         priority: str | None = None,
         assignee_account_id: str | None = None,
         labels: list[str] | None = None,
@@ -120,7 +208,7 @@ class JiraClient:
             "summary": summary,
         }
         if description:
-            fields["description"] = adf_doc(description)
+            fields["description"] = as_adf(description)
         if priority:
             fields["priority"] = {"name": priority}
         if assignee_account_id:
@@ -189,14 +277,88 @@ class JiraClient:
             ]
         }
 
-    def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+    def add_comment(self, issue_key: str, body: str | dict) -> dict[str, Any]:
         self.policy.ensure_issue_allowed(issue_key)
         response = self.session.post(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
-            json={"body": adf_doc(body)},
+            json={"body": as_adf(body)},
             timeout=30,
         )
         return self._json_response(response)
+
+    def update_comment(self, issue_key: str, comment_id: str, body: str | dict) -> dict[str, Any]:
+        """Update a comment on an allowlisted issue, restricted to own comments."""
+        self.policy.ensure_issue_allowed(issue_key)
+        self._validate_comment_id(comment_id)
+        own_account_id = self._myself_account_id()
+        
+        # Get the comment to verify it exists and belongs to the current user
+        comment = self._ensure_own_comment(issue_key, comment_id, own_account_id)
+        
+        # Update the comment
+        response = self.session.put(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            json={"body": as_adf(body)},
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        
+        return {"status": "updated", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+    def delete_comment(self, issue_key: str, comment_id: str) -> dict[str, Any]:
+        """Delete a comment on an allowlisted issue, restricted to own comments."""
+        self.policy.ensure_issue_allowed(issue_key)
+        self._validate_comment_id(comment_id)
+        own_account_id = self._myself_account_id()
+        
+        # Get the comment to verify it exists and belongs to the current user
+        self._ensure_own_comment(issue_key, comment_id, own_account_id)
+        
+        # Delete the comment
+        response = self.session.delete(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        
+        return {"status": "deleted", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+    def _myself_account_id(self) -> str:
+        """Get the current user's account ID, cached per client instance."""
+        if not hasattr(self, "_cached_account_id"):
+            response = self.session.get(self._url("/rest/api/3/myself"), timeout=30)
+            payload = self._json_response(response)
+            self._cached_account_id = payload["accountId"]
+        return self._cached_account_id
+
+    def _validate_comment_id(self, comment_id: str) -> None:
+        """Validate comment ID format using regex pattern."""
+        if not self._COMMENT_ID_RE.match(comment_id):
+            raise ValueError(f"Invalid comment ID format: {comment_id}")
+
+    def _ensure_own_comment(self, issue_key: str, comment_id: str, own_account_id: str) -> dict[str, Any]:
+        """Ensure the comment exists and belongs to the current user."""
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            timeout=30,
+        )
+        
+        # Handle 404 response
+        if response.status_code == 404:
+            raise JiraClientError(f"Jira request failed: 404 Comment {comment_id} not found")
+        
+        payload = self._json_response(response)
+        comment = payload
+        
+        # Check if the comment belongs to the current user
+        author_account_id = comment.get("author", {}).get("accountId")
+        if author_account_id != own_account_id:
+            raise JiraClientError(f"Cannot modify comment {comment_id}: only own comments can be modified")
+        
+        return comment
+
+    # Regex pattern for validating comment IDs
+    _COMMENT_ID_RE = re.compile(r"^\d+$")
 
     def _visible_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return one entry per linked issue, dropping links outside the allowlist.
@@ -255,7 +417,11 @@ def _safe_error_detail(response: requests.Response) -> str:
 def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(fields)
     if isinstance(normalized.get("description"), str):
-        normalized["description"] = adf_doc(normalized["description"])
+        normalized["description"] = as_adf(normalized["description"])
+    elif isinstance(normalized.get("description"), dict):
+        # Validate that the dict is a proper ADF doc
+        if normalized["description"].get("type") != "doc" or not isinstance(normalized["description"].get("content"), list):
+            raise ValueError(f"description must be a Markdown string or an ADF doc object, got dict with type {normalized['description'].get('type', 'unknown')!r}")
     if isinstance(normalized.get("priority"), str):
         normalized["priority"] = {"name": normalized["priority"]}
     if isinstance(normalized.get("assignee"), str):
@@ -280,10 +446,10 @@ def adf_doc(text: str) -> dict[str, Any]:
     }
 
 
-def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
+def compact_issue(issue: dict[str, Any], full_description: bool = False) -> dict[str, Any]:
     fields = issue.get("fields", {})
-    description = fields.get("description")
-    return {
+    description = adf_to_text(fields.get("description"))
+    compacted = {
         "key": issue.get("key"),
         "project": fields.get("project", {}).get("key"),
         "issue_type": fields.get("issuetype", {}).get("name"),
@@ -295,7 +461,26 @@ def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "labels": fields.get("labels") or [],
         "created": fields.get("created"),
         "updated": fields.get("updated"),
-        "description": _adf_excerpt(description),
+        "description": description,
+    }
+    if full_description:
+        return compacted
+    truncated = description is not None and len(description) > DESCRIPTION_EXCERPT_LIMIT
+    if truncated:
+        compacted["description"] = f"{description[:DESCRIPTION_EXCERPT_LIMIT].rstrip()}..."
+    compacted["description_truncated"] = truncated
+    return compacted
+
+
+def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": comment.get("id"),
+        "author": _display_user(comment.get("author")),
+        "body": adf_to_text(comment.get("body")),
+        "created": comment.get("created"),
+        "updated": comment.get("updated"),
+        "visibility": _comment_visibility(comment.get("visibility")),
+        "public": comment.get("jsdPublic", True),
     }
 
 
@@ -309,25 +494,8 @@ def _display_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _adf_excerpt(value: Any, limit: int = 800) -> str | None:
-    if not value:
+def _comment_visibility(visibility: dict[str, Any] | None) -> str | None:
+    """Describe who a restricted comment is limited to, so the reader sees it is not public."""
+    if not visibility:
         return None
-    text = _extract_adf_text(value).strip()
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit].rstrip()}..."
-
-
-def _extract_adf_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        pieces = []
-        if value.get("type") == "text":
-            pieces.append(value.get("text", ""))
-        for child in value.get("content", []):
-            pieces.append(_extract_adf_text(child))
-        return " ".join(part for part in pieces if part)
-    if isinstance(value, list):
-        return " ".join(_extract_adf_text(item) for item in value)
-    return ""
+    return f"{visibility.get('type')}: {visibility.get('value')}"
