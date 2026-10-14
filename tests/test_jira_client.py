@@ -5,6 +5,7 @@ from typing import Any
 from restricted_jira_mcp.config import JiraConfig
 from restricted_jira_mcp.jira_client import JiraClient, adf_doc
 from restricted_jira_mcp.policy import JiraPolicy, PolicyError
+from restricted_jira_mcp.adf import as_adf
 
 
 @dataclass
@@ -348,6 +349,100 @@ class JiraClientTests(unittest.TestCase):
 
         with self.assertRaises(PolicyError):
             client(session).update_issue("ISD-5445", {"parent": {"key": "NDA-1"}})
+
+    def test_update_issue_converts_markdown_description(self):
+        """Test that update_issue converts Markdown description to ADF."""
+        session = FakeSession()
+        
+        client(session).update_issue("ISD-5444", {"description": "## Plan\n\n- do it"})
+        
+        request_json = session.calls[0][2]["json"]
+        description = request_json["fields"]["description"]
+        self.assertEqual(description["type"], "doc")
+        self.assertEqual(description["version"], 1)
+        
+        # Check for heading with level 2
+        heading = next((node for node in description["content"] if node.get("type") == "heading"), None)
+        self.assertIsNotNone(heading)
+        self.assertEqual(heading["attrs"]["level"], 2)
+        
+        # Check for bullet list
+        bullet_list = next((node for node in description["content"] if node.get("type") == "bulletList"), None)
+        self.assertIsNotNone(bullet_list)
+        self.assertEqual(len(bullet_list["content"]), 1)
+
+    def test_update_issue_passes_raw_adf_description(self):
+        """Test that update_issue passes through raw ADF description unchanged."""
+        session = FakeSession()
+        raw_adf = adf_doc("raw")
+        
+        client(session).update_issue("ISD-5444", {"description": raw_adf})
+        
+        request_json = session.calls[0][2]["json"]
+        self.assertEqual(request_json["fields"]["description"], raw_adf)
+
+    def test_update_issue_rejects_invalid_adf_description(self):
+        """Test that update_issue rejects invalid ADF description with ValueError."""
+        session = FakeSession()
+        
+        with self.assertRaises(ValueError) as cm:
+            client(session).update_issue("ISD-5444", {"description": {"type": "paragraph"}})
+        
+        self.assertIn("must be a Markdown string or an ADF doc object", str(cm.exception))
+        self.assertEqual(session.calls, [])  # No session calls should be made
+
+    def test_create_issue_converts_markdown_description(self):
+        """Test that create_issue converts Markdown description to ADF."""
+        session = FakeSession()
+        session.next_post = FakeResponse(201, {"key": "ISD-5445"})
+        
+        client(session).create_issue(
+            project_key="ISD",
+            issue_type="Story",
+            summary="Example story",
+            description="## Plan\n\n- do it"
+        )
+        
+        request_json = session.calls[0][2]["json"]
+        description = request_json["fields"]["description"]
+        self.assertEqual(description["type"], "doc")
+        self.assertEqual(description["version"], 1)
+        
+        # Check for heading with level 2
+        heading = next((node for node in description["content"] if node.get("type") == "heading"), None)
+        self.assertIsNotNone(heading)
+        self.assertEqual(heading["attrs"]["level"], 2)
+        
+        # Check for bullet list
+        bullet_list = next((node for node in description["content"] if node.get("type") == "bulletList"), None)
+        self.assertIsNotNone(bullet_list)
+        self.assertEqual(len(bullet_list["content"]), 1)
+
+    def test_add_comment_converts_markdown_body(self):
+        """Test that add_comment converts Markdown body to ADF."""
+        session = FakeSession()
+        session.next_post = FakeResponse(201, {"id": "10001"})
+        
+        client(session).add_comment("ISD-5444", "Hello **world**")
+        
+        request_json = session.calls[0][2]["json"]
+        body = request_json["body"]
+        self.assertEqual(body["type"], "doc")
+        self.assertEqual(body["version"], 1)
+        
+        # Check for strong mark in the text
+        paragraph = next((node for node in body["content"] if node.get("type") == "paragraph"), None)
+        self.assertIsNotNone(paragraph)
+        
+        # The first text node is "Hello " with no marks
+        text_node1 = paragraph["content"][0]
+        self.assertEqual(text_node1["text"], "Hello ")
+        self.assertNotIn("marks", text_node1)
+        
+        # The second text node is "world" with strong marks
+        text_node2 = paragraph["content"][1]
+        self.assertEqual(text_node2["text"], "world")
+        self.assertEqual(text_node2["marks"][0]["type"], "strong")
 
 
 if __name__ == "__main__":

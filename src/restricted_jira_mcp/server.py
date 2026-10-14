@@ -19,6 +19,7 @@ def create_server() -> Any:
 
     @mcp.tool()
     def jira_get_issue(issue_key: str) -> dict[str, Any]:
+        """Read a single allowlisted issue's fields and links, with full description text."""
         return client.get_issue(issue_key)
 
     @mcp.tool()
@@ -46,6 +47,7 @@ def create_server() -> Any:
         parent_epic_key: str | None = None,
         custom_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Create a new issue in an allowlisted project; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.create_issue(
             project_key=project_key,
             issue_type=issue_type,
@@ -60,6 +62,7 @@ def create_server() -> Any:
 
     @mcp.tool()
     def jira_update_issue(issue_key: str, fields: dict[str, Any]) -> dict[str, str]:
+        """Update an allowlisted issue's fields; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.update_issue(issue_key, fields)
 
     @mcp.tool()
@@ -78,6 +81,7 @@ def create_server() -> Any:
 
     @mcp.tool()
     def jira_add_comment(issue_key: str, body: str) -> dict[str, Any]:
+        """Add a comment to an allowlisted issue; body accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.add_comment(issue_key, body)
 
     return mcp

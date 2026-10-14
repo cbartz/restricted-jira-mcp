@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .adf import adf_to_text
+from .adf import adf_to_text, as_adf
 from .config import JiraConfig
 from .policy import JiraPolicy
 
@@ -150,7 +150,7 @@ class JiraClient:
             "summary": summary,
         }
         if description:
-            fields["description"] = adf_doc(description)
+            fields["description"] = as_adf(description)
         if priority:
             fields["priority"] = {"name": priority}
         if assignee_account_id:
@@ -223,7 +223,7 @@ class JiraClient:
         self.policy.ensure_issue_allowed(issue_key)
         response = self.session.post(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
-            json={"body": adf_doc(body)},
+            json={"body": as_adf(body)},
             timeout=30,
         )
         return self._json_response(response)
@@ -285,7 +285,11 @@ def _safe_error_detail(response: requests.Response) -> str:
 def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(fields)
     if isinstance(normalized.get("description"), str):
-        normalized["description"] = adf_doc(normalized["description"])
+        normalized["description"] = as_adf(normalized["description"])
+    elif isinstance(normalized.get("description"), dict):
+        # Validate that the dict is a proper ADF doc
+        if normalized["description"].get("type") != "doc" or not isinstance(normalized["description"].get("content"), list):
+            raise ValueError(f"description must be a Markdown string or an ADF doc object, got dict with type {normalized['description'].get('type', 'unknown')!r}")
     if isinstance(normalized.get("priority"), str):
         normalized["priority"] = {"name": normalized["priority"]}
     if isinstance(normalized.get("assignee"), str):
