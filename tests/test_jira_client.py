@@ -444,6 +444,73 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(text_node2["text"], "world")
         self.assertEqual(text_node2["marks"][0]["type"], "strong")
 
+    def test_get_issue_requests_and_returns_custom_fields(self):
+        """Test that get_issue requests and returns allowlisted custom fields."""
+        # Create a payload with an ADF custom field
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["customfield_12345"] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "Acceptance: it works"}],
+                }
+            ],
+        }
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        # Check that the custom field was requested
+        request_params = session.calls[0][2]["params"]
+        self.assertIn("customfield_12345", request_params["fields"])
+        
+        # Check that the custom field is returned in the response
+        self.assertIn("custom_fields", issue)
+        self.assertEqual(issue["custom_fields"], {"customfield_12345": "Acceptance: it works"})
+
+    def test_get_issue_passes_through_scalar_custom_field(self):
+        """Test that get_issue passes through scalar custom fields unchanged."""
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["customfield_12345"] = "42"
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        # Check that the scalar custom field is returned unchanged
+        self.assertIn("custom_fields", issue)
+        self.assertEqual(issue["custom_fields"], {"customfield_12345": "42"})
+
+    def test_get_issue_dumps_non_adf_dict_custom_field(self):
+        """Test that get_issue dumps non-ADF dict custom fields as JSON."""
+        import json
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["customfield_12345"] = {"value": "Blocked", "id": "1"}
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        # Check that the non-ADF dict custom field is JSON dumped
+        self.assertIn("custom_fields", issue)
+        expected_value = json.dumps({"value": "Blocked", "id": "1"})
+        self.assertEqual(issue["custom_fields"], {"customfield_12345": expected_value})
+
+    def test_search_does_not_request_custom_fields(self):
+        """Test that search does not request custom fields."""
+        session = FakeSession()
+        session.next_post = FakeResponse(200, {"total": 1, "issues": [issue_payload("ISD-5444", "ISD")]})
+
+        client(session).search("status = Done")
+
+        # Check that the search request does not include custom fields
+        request_json = session.calls[0][2]["json"]
+        fields = request_json["fields"]
+        self.assertNotIn("customfield_12345", fields)
+
 
 if __name__ == "__main__":
     unittest.main()

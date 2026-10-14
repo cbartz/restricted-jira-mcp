@@ -60,17 +60,74 @@ class JiraClient:
         )
         return cls(config=config, policy=policy)
 
+    def _requested_fields(self, base: list[str]) -> list[str]:
+        """Return requested fields with allowlisted custom fields added.
+        
+        Combines base fields with policy custom fields, preserving order and deduplicating.
+        """
+        # Start with base fields
+        fields = list(base)
+        
+        # Add allowlisted custom fields not already present
+        for field in self.policy.allowed_custom_fields:
+            if field not in fields:
+                fields.append(field)
+        
+        return fields
+
+    def _custom_fields_view(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """Create a view of allowlisted custom fields with appropriate transformation.
+        
+        For each allowlisted field:
+        - dict with type == "doc" is rendered via adf_to_text (full length)
+        - any other dict or list is json.dumps-ed
+        - scalars pass through unchanged
+        
+        Returns a dict with field_id: readable_value.
+        """
+        custom_fields = {}
+        
+        for field_id in self.policy.allowed_custom_fields:
+            if field_id not in fields:
+                # Field not present in the issue - skip it (could alternatively include None)
+                continue
+                
+            value = fields[field_id]
+            
+            # Handle ADF documents
+            if isinstance(value, dict) and value.get("type") == "doc":
+                custom_fields[field_id] = adf_to_text(value)
+            # Handle other complex types (dict, list) by JSON dumping
+            elif isinstance(value, (dict, list)):
+                import json
+                custom_fields[field_id] = json.dumps(value)
+            # Handle scalars (string, number, boolean, etc.)
+            else:
+                custom_fields[field_id] = value
+        
+        return custom_fields
+
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         self.policy.ensure_issue_allowed(issue_key)
+        
+        # Get requested fields including allowlisted custom fields
+        requested_fields = self._requested_fields(ISSUE_FIELDS)
+        
         response = self.session.get(
             self._url(f"/rest/api/3/issue/{issue_key.upper()}"),
-            params={"fields": ",".join(ISSUE_FIELDS)},
+            params={"fields": ",".join(requested_fields)},
             timeout=30,
         )
         payload = self._json_response(response)
         self.policy.ensure_response_issue_allowed(payload)
         issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
+        
+        # Add custom fields view
+        custom_fields = self._custom_fields_view(payload.get("fields", {}))
+        if custom_fields:
+            issue["custom_fields"] = custom_fields
+        
         return issue
 
     def get_comments(
