@@ -84,6 +84,16 @@ def create_server() -> Any:
         """Add a comment to an allowlisted issue; body accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.add_comment(issue_key, body)
 
+    @mcp.tool()
+    def jira_update_comment(issue_key: str, comment_id: str, body: str | dict) -> dict[str, Any]:
+        """Update your own comment on an allowlisted issue; body accepts Markdown or a raw ADF doc dict; only comments authored by the configured user can be edited."""
+        return client.update_comment(issue_key, comment_id, body)
+
+    @mcp.tool()
+    def jira_delete_comment(issue_key: str, comment_id: str) -> dict[str, Any]:
+        """Delete your own comment on an allowlisted issue; only comments authored by the configured user can be deleted."""
+        return client.delete_comment(issue_key, comment_id)
+
     return mcp
 
 

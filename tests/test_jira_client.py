@@ -37,9 +37,13 @@ class FakeSession:
         self.next_get = FakeResponse(200, issue_payload("ISD-5444", "ISD"))
         self.next_post = FakeResponse(200, {"issues": []})
         self.next_put = FakeResponse(204)
+        self.next_delete = FakeResponse(204)
+        self.get_responses = []
 
     def get(self, url, **kwargs):
         self.calls.append(("GET", url, kwargs))
+        if self.get_responses:
+            return self.get_responses.pop(0)
         return self.next_get
 
     def post(self, url, **kwargs):
@@ -49,6 +53,10 @@ class FakeSession:
     def put(self, url, **kwargs):
         self.calls.append(("PUT", url, kwargs))
         return self.next_put
+
+    def delete(self, url, **kwargs):
+        self.calls.append(("DELETE", url, kwargs))
+        return self.next_delete
 
 
 def issue_payload(key: str, project: str) -> dict[str, Any]:
@@ -510,6 +518,131 @@ class JiraClientTests(unittest.TestCase):
         request_json = session.calls[0][2]["json"]
         fields = request_json["fields"]
         self.assertNotIn("customfield_12345", fields)
+
+    def test_update_comment_puts_adf_body_to_scoped_path(self):
+        """Test that update_comment puts ADF body to the scoped path."""
+        from restricted_jira_mcp.adf import as_adf
+        
+        session = FakeSession()
+        # Set up get_responses queue for myself and comment endpoints
+        myself_payload = {"accountId": "acc-1"}
+        comment_payload_data = comment_payload("10001", "old")
+        session.get_responses = [
+            FakeResponse(200, myself_payload),
+            FakeResponse(200, comment_payload_data),
+        ]
+        
+        result = client(session).update_comment("ISD-5444", "10001", "new text")
+        
+        # Check call sequence
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        self.assertEqual(session.calls[2][0], "PUT")
+        self.assertTrue(session.calls[2][1].endswith("/rest/api/3/issue/ISD-5444/comment/10001"))
+        self.assertEqual(session.calls[2][2]["json"], {"body": as_adf("new text")})
+        
+        # Check result
+        self.assertEqual(result, {"status": "updated", "issue_key": "ISD-5444", "comment_id": "10001"})
+
+    def test_update_comment_rejects_foreign_author(self):
+        """Test that update_comment rejects comments authored by foreign users."""
+        session = FakeSession()
+        # Set up get_responses queue for myself and comment endpoints
+        myself_payload = {"accountId": "acc-1"}
+        foreign_comment_payload = comment_payload("10001", "old")
+        foreign_comment_payload["author"]["accountId"] = "acc-2"  # Foreign author
+        session.get_responses = [
+            FakeResponse(200, myself_payload),
+            FakeResponse(200, foreign_comment_payload),
+        ]
+        
+        with self.assertRaises(Exception) as cm:
+            client(session).update_comment("ISD-5444", "10001", "new text")
+        
+        self.assertIn("own comments", str(cm.exception))
+        self.assertIn("10001", str(cm.exception))
+        
+        # Check that only GET calls were made
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+
+    def test_delete_comment_deletes_scoped_path(self):
+        """Test that delete_comment deletes the scoped path."""
+        session = FakeSession()
+        # Set up get_responses queue for myself and comment endpoints
+        myself_payload = {"accountId": "acc-1"}
+        comment_payload_data = comment_payload("10001", "old")
+        session.get_responses = [
+            FakeResponse(200, myself_payload),
+            FakeResponse(200, comment_payload_data),
+        ]
+        
+        result = client(session).delete_comment("ISD-5444", "10001")
+        
+        # Check call sequence
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        self.assertEqual(session.calls[2], ("DELETE", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        
+        # Check result
+        self.assertEqual(result, {"status": "deleted", "issue_key": "ISD-5444", "comment_id": "10001"})
+
+    def test_myself_called_once_across_operations(self):
+        """Test that /myself endpoint is called only once across multiple operations."""
+        session = FakeSession()
+        # Set up get_responses queue for myself and comment endpoints
+        myself_payload = {"accountId": "acc-1"}
+        comment_payload_data = comment_payload("10001", "old")
+        session.get_responses = [
+            FakeResponse(200, myself_payload),  # First call gets myself
+            FakeResponse(200, comment_payload_data),  # First call gets comment
+            FakeResponse(200, comment_payload_data),  # Second call gets comment
+        ]
+        
+        # Make two update_comment calls on the same client instance
+        client_instance = client(session)
+        client_instance.update_comment("ISD-5444", "10001", "new text 1")
+        client_instance.update_comment("ISD-5444", "10001", "new text 2")
+        
+        # Check that /myself was called only once
+        myself_calls = [call for call in session.calls if call[1].endswith("/rest/api/3/myself")]
+        self.assertEqual(len(myself_calls), 1)
+        
+        # Verify the total number of calls (myself + 2 comment GETs + 2 PUTs)
+        self.assertEqual(len(session.calls), 5)
+
+    def test_comment_edit_delete_error_cases(self):
+        """Test error cases for comment edit/delete operations."""
+        session = FakeSession()
+        myself_payload = {"accountId": "acc-1"}
+        
+        # Test disallowed issue key
+        with self.assertRaises(PolicyError):
+            client(session).update_comment("NDA-123", "10001", "new text")
+        self.assertEqual(session.calls, [])
+        
+        with self.assertRaises(PolicyError):
+            client(session).delete_comment("NDA-123", "10001")
+        self.assertEqual(session.calls, [])
+        
+        # Test malformed comment IDs
+        with self.assertRaises(ValueError):
+            client(session).update_comment("ISD-5444", "10001/../x", "new text")
+        self.assertEqual(session.calls, [])
+        
+        with self.assertRaises(ValueError):
+            client(session).delete_comment("ISD-5444", "abc")
+        self.assertEqual(session.calls, [])
+        
+        # Test 404 comment
+        session.get_responses = [FakeResponse(200, myself_payload), FakeResponse(404)]
+        with self.assertRaises(Exception) as cm:
+            client(session).update_comment("ISD-5444", "99999", "new text")
+        self.assertIn("99999", str(cm.exception))
+        self.assertEqual(len(session.calls), 2)  # Only GET calls
 
 
 if __name__ == "__main__":

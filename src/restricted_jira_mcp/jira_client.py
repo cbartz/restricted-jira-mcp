@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 import requests
 
@@ -284,6 +285,80 @@ class JiraClient:
             timeout=30,
         )
         return self._json_response(response)
+
+    def update_comment(self, issue_key: str, comment_id: str, body: str | dict) -> dict[str, Any]:
+        """Update a comment on an allowlisted issue, restricted to own comments."""
+        self.policy.ensure_issue_allowed(issue_key)
+        self._validate_comment_id(comment_id)
+        own_account_id = self._myself_account_id()
+        
+        # Get the comment to verify it exists and belongs to the current user
+        comment = self._ensure_own_comment(issue_key, comment_id, own_account_id)
+        
+        # Update the comment
+        response = self.session.put(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            json={"body": as_adf(body)},
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        
+        return {"status": "updated", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+    def delete_comment(self, issue_key: str, comment_id: str) -> dict[str, Any]:
+        """Delete a comment on an allowlisted issue, restricted to own comments."""
+        self.policy.ensure_issue_allowed(issue_key)
+        self._validate_comment_id(comment_id)
+        own_account_id = self._myself_account_id()
+        
+        # Get the comment to verify it exists and belongs to the current user
+        self._ensure_own_comment(issue_key, comment_id, own_account_id)
+        
+        # Delete the comment
+        response = self.session.delete(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        
+        return {"status": "deleted", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+    def _myself_account_id(self) -> str:
+        """Get the current user's account ID, cached per client instance."""
+        if not hasattr(self, "_cached_account_id"):
+            response = self.session.get(self._url("/rest/api/3/myself"), timeout=30)
+            payload = self._json_response(response)
+            self._cached_account_id = payload["accountId"]
+        return self._cached_account_id
+
+    def _validate_comment_id(self, comment_id: str) -> None:
+        """Validate comment ID format using regex pattern."""
+        if not self._COMMENT_ID_RE.match(comment_id):
+            raise ValueError(f"Invalid comment ID format: {comment_id}")
+
+    def _ensure_own_comment(self, issue_key: str, comment_id: str, own_account_id: str) -> dict[str, Any]:
+        """Ensure the comment exists and belongs to the current user."""
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            timeout=30,
+        )
+        
+        # Handle 404 response
+        if response.status_code == 404:
+            raise JiraClientError(f"Jira request failed: 404 Comment {comment_id} not found")
+        
+        payload = self._json_response(response)
+        comment = payload
+        
+        # Check if the comment belongs to the current user
+        author_account_id = comment.get("author", {}).get("accountId")
+        if author_account_id != own_account_id:
+            raise JiraClientError(f"Cannot modify comment {comment_id}: only own comments can be modified")
+        
+        return comment
+
+    # Regex pattern for validating comment IDs
+    _COMMENT_ID_RE = re.compile(r"^\d+$")
 
     def _visible_links(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return one entry per linked issue, dropping links outside the allowlist.
