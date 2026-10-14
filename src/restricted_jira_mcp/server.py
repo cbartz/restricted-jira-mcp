@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import argparse
+import os
 from typing import Any
 
+from .http_auth import ASGIApp, BearerAuthMiddleware, load_client_token_hashes
 from .jira_client import JiraClient
 
 
-def create_server() -> Any:
+def create_server(client: JiraClient | None = None) -> Any:
+    """Build the FastMCP server with every tool registered over the given JiraClient.
+
+    When no client is injected, one is built from the environment (existing behaviour).
+    """
     try:
         from mcp.server.fastmcp import FastMCP
     except ModuleNotFoundError as exc:
@@ -15,8 +22,39 @@ def create_server() -> Any:
         ) from exc
 
     mcp = FastMCP("restricted-jira-mcp")
-    client = JiraClient.from_env()
+    _register_tools(mcp, JiraClient.from_env() if client is None else client)
+    return mcp
 
+
+def build_http_app(client: JiraClient, host: str, port: int) -> ASGIApp:
+    """Wrap the stateless streamable-HTTP MCP app behind per-client bearer-token auth.
+
+    Token hashes come from the file named by $JIRA_MCP_CLIENT_TOKENS_FILE; an
+    unusable value fails closed with ValueError before anything is served.
+    """
+    token_hashes = _load_client_token_hashes()
+
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The MCP SDK is not installed. Install project dependencies before running "
+            "the MCP server, for example: python3 -m pip install -e ."
+        ) from exc
+
+    mcp = FastMCP(
+        "restricted-jira-mcp",
+        host=host,
+        port=port,
+        stateless_http=True,
+        json_response=True,
+    )
+    _register_tools(mcp, client)
+    return BearerAuthMiddleware(mcp.streamable_http_app(), token_hashes)
+
+
+def _register_tools(mcp: Any, client: JiraClient) -> None:
+    """Register every Jira tool on the FastMCP instance, closed over one client."""
     @mcp.tool()
     def jira_get_issue(issue_key: str) -> dict[str, Any]:
         """Read a single allowlisted issue's fields and links, with full description text."""
@@ -94,11 +132,63 @@ def create_server() -> Any:
         """Delete your own comment on an allowlisted issue; only comments authored by the configured user can be deleted."""
         return client.delete_comment(issue_key, comment_id)
 
-    return mcp
+
+def _load_client_token_hashes() -> tuple[str, ...]:
+    """Read the per-client bearer token hashes named by $JIRA_MCP_CLIENT_TOKENS_FILE."""
+    path = os.environ.get("JIRA_MCP_CLIENT_TOKENS_FILE")
+    if not path:
+        raise ValueError(
+            "JIRA_MCP_CLIENT_TOKENS_FILE is not set; serving HTTP requires a client-token hash file"
+        )
+    try:
+        return load_client_token_hashes(path)
+    except OSError as exc:
+        raise ValueError(f"Could not read client-token hash file {path}: {exc}") from exc
 
 
-def main() -> None:
-    create_server().run()
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI flags; the transport default comes from $JIRA_MCP_TRANSPORT or stdio.
+
+    Environment variables are read only after parsing, so --help always exits 0
+    before any config or token loading can happen.
+    """
+    parser = argparse.ArgumentParser(
+        prog="restricted-jira-mcp",
+        description="Restricted Jira MCP server over stdio or bearer-authenticated streamable HTTP.",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        help="Transport to serve on (default: $JIRA_MCP_TRANSPORT or stdio).",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1).")
+    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: 8000).")
+    args = parser.parse_args(argv)
+    if args.transport is None:
+        args.transport = _transport_from_env(parser)
+    return args
+
+
+def _transport_from_env(parser: argparse.ArgumentParser) -> str:
+    """Resolve the transport default from $JIRA_MCP_TRANSPORT, failing closed on typos."""
+    env_transport = os.environ.get("JIRA_MCP_TRANSPORT", "").strip().lower()
+    if not env_transport:
+        return "stdio"
+    if env_transport not in ("stdio", "http"):
+        parser.error(f"invalid JIRA_MCP_TRANSPORT {env_transport!r}: expected 'stdio' or 'http'")
+    return env_transport
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point: serve the MCP server over stdio (default) or streamable HTTP."""
+    args = _parse_args(argv)
+    if args.transport == "http":
+        import uvicorn
+
+        client = JiraClient.from_env()
+        uvicorn.run(build_http_app(client, args.host, args.port), host=args.host, port=args.port)
+    else:
+        create_server().run()
 
 
 if __name__ == "__main__":
