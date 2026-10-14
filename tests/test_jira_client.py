@@ -113,6 +113,20 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(issue["project"], "ISD")
         self.assertEqual(session.calls[0][0], "GET")
 
+    def test_get_issue_returns_full_description(self):
+        # get_issue returns the whole rendered description: no "..." and no truncation flag.
+        session = FakeSession()
+        description_text = "x" * 900
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["description"] = adf_doc(description_text)
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertEqual(issue["description"], description_text)
+        self.assertNotIn("...", issue["description"])
+        self.assertNotIn("description_truncated", issue)
+
     def test_search_wraps_jql_and_validates_results(self):
         session = FakeSession()
         session.next_post = FakeResponse(200, {"total": 1, "issues": [issue_payload("ISD-5444", "ISD")]})
@@ -129,6 +143,25 @@ class JiraClientTests(unittest.TestCase):
 
         with self.assertRaises(PolicyError):
             client(session).search("")
+
+    def test_search_flags_truncated_descriptions(self):
+        # Search results excerpt descriptions at 800 chars and flag whether truncation happened.
+        cases = [
+            ("within_limit", "x" * 800, "x" * 800, False),
+            ("over_limit", "x" * 810, "x" * 800 + "...", True),
+        ]
+        for label, description_text, expected_description, expected_truncated in cases:
+            with self.subTest(label):
+                session = FakeSession()
+                payload = issue_payload("ISD-5444", "ISD")
+                payload["fields"]["description"] = adf_doc(description_text)
+                session.next_post = FakeResponse(200, {"total": 1, "issues": [payload]})
+
+                result = client(session).search("status = Done")
+
+                issue = result["issues"][0]
+                self.assertEqual(issue["description"], expected_description)
+                self.assertEqual(issue["description_truncated"], expected_truncated)
 
     def test_update_normalizes_description_and_rejects_unsupported_fields(self):
         session = FakeSession()
@@ -284,6 +317,26 @@ class JiraClientTests(unittest.TestCase):
         comment = result["comments"][0]
         self.assertEqual(comment["visibility"], "role: Administrators")
         self.assertFalse(comment["public"])
+
+    def test_get_comments_returns_full_body(self):
+        # get_comments returns comment bodies in full, without any truncation marker.
+        session = FakeSession()
+        body_text = "y" * 2500
+        session.next_get = FakeResponse(
+            200,
+            {
+                "startAt": 0,
+                "maxResults": 50,
+                "total": 1,
+                "comments": [comment_payload("10001", body_text)],
+            },
+        )
+
+        result = client(session).get_comments("ISD-5444")
+
+        comment = result["comments"][0]
+        self.assertEqual(comment["body"], body_text)
+        self.assertNotIn("...", comment["body"])
 
     def test_update_normalizes_and_validates_parent(self):
         session = FakeSession()

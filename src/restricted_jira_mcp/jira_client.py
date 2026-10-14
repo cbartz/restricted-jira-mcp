@@ -4,6 +4,7 @@ from typing import Any
 
 import requests
 
+from .adf import adf_to_text
 from .config import JiraConfig
 from .policy import JiraPolicy
 
@@ -25,7 +26,7 @@ DEFAULT_FIELDS = [
 ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks"]
 
 MAX_COMMENTS_PER_PAGE = 50
-COMMENT_BODY_LIMIT = 2000
+DESCRIPTION_EXCERPT_LIMIT = 800
 
 
 class JiraClientError(RuntimeError):
@@ -68,7 +69,7 @@ class JiraClient:
         )
         payload = self._json_response(response)
         self.policy.ensure_response_issue_allowed(payload)
-        issue = compact_issue(payload)
+        issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
         return issue
 
@@ -309,10 +310,10 @@ def adf_doc(text: str) -> dict[str, Any]:
     }
 
 
-def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
+def compact_issue(issue: dict[str, Any], full_description: bool = False) -> dict[str, Any]:
     fields = issue.get("fields", {})
-    description = fields.get("description")
-    return {
+    description = adf_to_text(fields.get("description"))
+    compacted = {
         "key": issue.get("key"),
         "project": fields.get("project", {}).get("key"),
         "issue_type": fields.get("issuetype", {}).get("name"),
@@ -324,15 +325,22 @@ def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
         "labels": fields.get("labels") or [],
         "created": fields.get("created"),
         "updated": fields.get("updated"),
-        "description": _adf_excerpt(description),
+        "description": description,
     }
+    if full_description:
+        return compacted
+    truncated = description is not None and len(description) > DESCRIPTION_EXCERPT_LIMIT
+    if truncated:
+        compacted["description"] = f"{description[:DESCRIPTION_EXCERPT_LIMIT].rstrip()}..."
+    compacted["description_truncated"] = truncated
+    return compacted
 
 
 def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": comment.get("id"),
         "author": _display_user(comment.get("author")),
-        "body": _adf_excerpt(comment.get("body"), limit=COMMENT_BODY_LIMIT),
+        "body": adf_to_text(comment.get("body")),
         "created": comment.get("created"),
         "updated": comment.get("updated"),
         "visibility": _comment_visibility(comment.get("visibility")),
@@ -355,27 +363,3 @@ def _comment_visibility(visibility: dict[str, Any] | None) -> str | None:
     if not visibility:
         return None
     return f"{visibility.get('type')}: {visibility.get('value')}"
-
-
-def _adf_excerpt(value: Any, limit: int = 800) -> str | None:
-    if not value:
-        return None
-    text = _extract_adf_text(value).strip()
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit].rstrip()}..."
-
-
-def _extract_adf_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        pieces = []
-        if value.get("type") == "text":
-            pieces.append(value.get("text", ""))
-        for child in value.get("content", []):
-            pieces.append(_extract_adf_text(child))
-        return " ".join(part for part in pieces if part)
-    if isinstance(value, list):
-        return " ".join(_extract_adf_text(item) for item in value)
-    return ""
