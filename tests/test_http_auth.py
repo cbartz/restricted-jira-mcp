@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import tempfile
 import unittest
@@ -134,3 +135,43 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
         middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
         with TestClient(middleware):
             self.assertIn("lifespan", self.scopes_seen)
+
+    def test_closes_websocket_scope_without_reaching_the_app(self):
+        # A websocket scope must be refused with a 1008 close, never proxied open.
+        async def scenario():
+            sent = []
+
+            async def receive():
+                return {"type": "websocket.connect"}
+
+            async def send(message):
+                sent.append(message)
+
+            middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+            await middleware({"type": "websocket", "headers": ()}, receive, send)
+            return sent
+
+        sent = asyncio.run(scenario())
+
+        self.assertEqual(sent, [{"type": "websocket.close", "code": 1008}])
+        self.assertEqual(self.scopes_seen, [])
+
+    def test_unknown_scope_types_fail_closed_without_touching_the_app(self):
+        # Unknown scope types must neither reach the app nor emit anything.
+        async def scenario():
+            sent = []
+
+            async def receive():
+                return {"type": "mystery"}
+
+            async def send(message):
+                sent.append(message)
+
+            middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+            await middleware({"type": "mystery"}, receive, send)
+            return sent
+
+        sent = asyncio.run(scenario())
+
+        self.assertEqual(sent, [])
+        self.assertEqual(self.scopes_seen, [])

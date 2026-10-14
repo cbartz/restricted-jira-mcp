@@ -46,7 +46,9 @@ class BearerAuthMiddleware:
 
     Requests must present `Authorization: Bearer <token>` where the token's
     SHA-256 digest matches one of the precomputed hashes. Tokens are never
-    logged or echoed; every failed check gets a generic 401.
+    logged or echoed; every failed check gets a generic 401. Only lifespan
+    scopes pass through untouched: websocket scopes are closed with 1008 and
+    unknown scope types fail closed without reaching the wrapped app.
     """
 
     def __init__(self, app: ASGIApp, token_hashes: Iterable[str]) -> None:
@@ -54,16 +56,22 @@ class BearerAuthMiddleware:
         self._token_hashes = tuple(token_hashes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        scope_type = scope["type"]
+        if scope_type == "http":
+            token = _bearer_token(scope.get("headers") or ())
+            if token is None or not self._matches(token):
+                await _send_unauthorized(send)
+                return
             await self.app(scope, receive, send)
             return
-
-        token = _bearer_token(scope.get("headers") or ())
-        if token is None or not self._matches(token):
-            await _send_unauthorized(send)
+        if scope_type == "lifespan":
+            await self.app(scope, receive, send)
             return
-
-        await self.app(scope, receive, send)
+        if scope_type == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        # Unknown scope type: fail closed without calling the app or the wire.
+        return
 
     def _matches(self, token: str) -> bool:
         digest = hashlib.sha256(token.encode()).hexdigest()
