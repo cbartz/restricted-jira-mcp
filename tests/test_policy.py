@@ -93,6 +93,12 @@ class JiraPolicyTests(unittest.TestCase):
                 "project in (ABC, ISD) AND (status = 'open') order by key desc",
             )
 
+        with self.subTest("ORDER BY with double space"):
+            self.assertEqual(
+                policy.wrap_jql("status = Done ORDER  BY created"),
+                "project in (ABC, ISD) AND (status = Done) ORDER  BY created",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

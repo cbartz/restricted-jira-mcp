@@ -29,7 +29,7 @@ def _split_order_by(jql: str) -> tuple[str, str | None]:
     # Look for the last occurrence of ORDER BY outside quotes
     order_by_pos = -1
     
-    for i in range(len(jql) - 7):  # 7 is the length of "order by"
+    for i in range(len(jql) - 7):  # leave room for the 8-character "order by" token
         char = jql[i]
         
         # Track quotes
@@ -39,13 +39,13 @@ def _split_order_by(jql: str) -> tuple[str, str | None]:
             in_single_quote = not in_single_quote
         
         # Check for ORDER BY pattern when not in quotes
-        if (not in_single_quote and not in_double_quote and 
-            jql[i:i+8].lower() == "order by" and
+        match = _ORDER_BY_RE.match(jql, i) if not in_single_quote and not in_double_quote else None
+        if (match and
             (i == 0 or jql[i-1].isspace()) and
-            (i + 8 == len(jql) or jql[i+8].isspace() or jql[i+8] in "(,)") and
+            (match.end() == len(jql) or jql[match.end()].isspace() or jql[match.end()] in "(,)") and
             # Check that this is the last ORDER BY in the string
-            "order by" not in jql[i+8:].lower()):
-            
+            not _ORDER_BY_RE.search(jql[match.end():])):
+
             order_by_pos = i
     
     if order_by_pos == -1:
@@ -58,6 +58,9 @@ def _split_order_by(jql: str) -> tuple[str, str | None]:
 
 
 ISSUE_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)-\d+$")
+
+# The ORDER BY keyword, tolerating arbitrary whitespace between the words.
+_ORDER_BY_RE = re.compile(r"order\s+by", re.IGNORECASE)
 PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
