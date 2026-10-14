@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from restricted_jira_mcp.config import JiraConfig
-from restricted_jira_mcp.jira_client import JiraClient, adf_doc
+from restricted_jira_mcp.jira_client import JiraClient, JiraClientError, adf_doc
 from restricted_jira_mcp.policy import JiraPolicy, PolicyError
 from restricted_jira_mcp.adf import as_adf
 
@@ -557,7 +557,7 @@ class JiraClientTests(unittest.TestCase):
             FakeResponse(200, foreign_comment_payload),
         ]
         
-        with self.assertRaises(Exception) as cm:
+        with self.assertRaises(JiraClientError) as cm:
             client(session).update_comment("ISD-5444", "10001", "new text")
         
         self.assertIn("own comments", str(cm.exception))
@@ -647,7 +647,7 @@ class JiraClientTests(unittest.TestCase):
             session = FakeSession()
             myself_payload = {"accountId": "acc-1"}
             session.get_responses = [FakeResponse(200, myself_payload), FakeResponse(404)]
-            with self.assertRaises(Exception) as cm:
+            with self.assertRaises(JiraClientError) as cm:
                 client(session).update_comment("ISD-5444", "99999", "new text")
             self.assertIn("99999", str(cm.exception))
             self.assertEqual(len(session.calls), 2)  # Only GET calls
