@@ -616,33 +616,41 @@ class JiraClientTests(unittest.TestCase):
 
     def test_comment_edit_delete_error_cases(self):
         """Test error cases for comment edit/delete operations."""
-        session = FakeSession()
-        myself_payload = {"accountId": "acc-1"}
-        
         # Test disallowed issue key
-        with self.assertRaises(PolicyError):
-            client(session).update_comment("NDA-123", "10001", "new text")
-        self.assertEqual(session.calls, [])
+        with self.subTest("disallowed issue key"):
+            session = FakeSession()
+            with self.assertRaises(PolicyError):
+                client(session).update_comment("NDA-123", "10001", "new text")
+            self.assertEqual(session.calls, [])
         
-        with self.assertRaises(PolicyError):
-            client(session).delete_comment("NDA-123", "10001")
-        self.assertEqual(session.calls, [])
+        with self.subTest("disallowed issue key - delete"):
+            session = FakeSession()
+            with self.assertRaises(PolicyError):
+                client(session).delete_comment("NDA-123", "10001")
+            self.assertEqual(session.calls, [])
         
         # Test malformed comment IDs
-        with self.assertRaises(ValueError):
-            client(session).update_comment("ISD-5444", "10001/../x", "new text")
-        self.assertEqual(session.calls, [])
+        with self.subTest("malformed comment ID - update"):
+            session = FakeSession()
+            with self.assertRaises(ValueError):
+                client(session).update_comment("ISD-5444", "10001/../x", "new text")
+            self.assertEqual(session.calls, [])
         
-        with self.assertRaises(ValueError):
-            client(session).delete_comment("ISD-5444", "abc")
-        self.assertEqual(session.calls, [])
+        with self.subTest("malformed comment ID - delete"):
+            session = FakeSession()
+            with self.assertRaises(ValueError):
+                client(session).delete_comment("ISD-5444", "abc")
+            self.assertEqual(session.calls, [])
         
         # Test 404 comment
-        session.get_responses = [FakeResponse(200, myself_payload), FakeResponse(404)]
-        with self.assertRaises(Exception) as cm:
-            client(session).update_comment("ISD-5444", "99999", "new text")
-        self.assertIn("99999", str(cm.exception))
-        self.assertEqual(len(session.calls), 2)  # Only GET calls
+        with self.subTest("404 comment"):
+            session = FakeSession()
+            myself_payload = {"accountId": "acc-1"}
+            session.get_responses = [FakeResponse(200, myself_payload), FakeResponse(404)]
+            with self.assertRaises(Exception) as cm:
+                client(session).update_comment("ISD-5444", "99999", "new text")
+            self.assertIn("99999", str(cm.exception))
+            self.assertEqual(len(session.calls), 2)  # Only GET calls
 
 
 if __name__ == "__main__":
