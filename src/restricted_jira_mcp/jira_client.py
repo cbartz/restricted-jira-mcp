@@ -215,7 +215,9 @@ class JiraClient:
             "issuetype": {"name": issue_type},
             "summary": summary,
         }
-        if description:
+        if description is not None:
+            # None means "no description"; anything supplied — including an
+            # empty dict — goes through ADF validation.
             fields["description"] = as_adf(description)
         if priority:
             fields["priority"] = {"name": priority}

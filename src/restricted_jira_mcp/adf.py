@@ -415,6 +415,33 @@ def _render_marked_run(
 
     if not marks:
         return _escape_markdown(text, at_line_start)
+    lead = re.match(r"^\s*", text).group(0)
+    core = text[len(lead):]
+    trail_match = re.search(r"\s*$", core)
+    trail = trail_match.group(0)
+    core = core[: trail_match.start()]
+    link_mark = next((mark for mark in marks if mark.get("type") == "link"), None)
+    if link_mark is not None:
+        # Link syntax has no flanking restrictions, and the brackets insulate
+        # any emphasis wrapped inside the label, so link runs render at full
+        # fidelity where bare emphasis would have to shift or drop.
+        attrs = link_mark.get("attrs", {})
+        destination = _render_link_destination(attrs.get("href", ""))
+        title = attrs.get("title")
+        title_part = ""
+        if title:
+            escaped_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("&", "\\&")
+            title_part = f' "{escaped_title}"'
+        if any(mark.get("type") == "code" for mark in marks):
+            # Code spans keep their boundary whitespace, so use the full text.
+            inner = _render_code_span(text)
+            emphasis = [mark for mark in marks if mark.get("type") not in ("link", "code")]
+        else:
+            emphasis = [mark for mark in marks if mark.get("type") != "link"]
+            inner = _escape_markdown(core, at_line_start and not lead)
+        for mark in reversed(emphasis):
+            inner = _wrap_mark(mark, inner)
+        return lead + f"[{inner}]({destination}{title_part})" + trail
     if any(mark.get("type") == "code" for mark in marks):
         # Code content is literal: no whitespace trimming (boundary spaces are
         # code), no backslash escaping inside the span.
@@ -423,11 +450,6 @@ def _render_marked_run(
         for mark in reversed(marks):
             inner = _wrap_mark(mark, inner)
         return inner
-    lead = re.match(r"^\s*", text).group(0)
-    core = text[len(lead):]
-    trail_match = re.search(r"\s*$", core)
-    trail = trail_match.group(0)
-    core = core[: trail_match.start()]
     if not core:
         return _escape_markdown(lead + trail, at_line_start)
     if _punct(core[0]) and _word(prev_char):
@@ -566,16 +588,22 @@ def _convert_block(node: SyntaxTreeNode) -> dict | None:
         order = int(start) if start is not None else 1
         return {"type": "orderedList", "attrs": {"order": order}, "content": _convert_blocks(node.children)}
     if node_type == "list_item":
-        # ADF list items must start with a paragraph and reject heading
-        # children; normalize a heading to its text so Jira accepts the write.
+        # ADF list items must start with a paragraph, need at least one child,
+        # and reject heading/rule children; normalize so Jira accepts the write.
         children = []
         for child in node.children:
             if child.type == "heading":
                 children.append({"type": "paragraph", "content": _inline_content(child)})
+            elif child.type == "hr":
+                children.append({"type": "paragraph", "content": [_text_node("---", [])]})
             else:
                 block = _convert_block(child)
                 if block:
                     children.append(block)
+        if not children:
+            children = [{"type": "paragraph", "content": []}]
+        if children[0].get("type") != "paragraph":
+            children.insert(0, {"type": "paragraph", "content": []})
         return {"type": "listItem", "content": children}
     if node_type in ("fence", "code_block"):
         return _convert_code_block(node)

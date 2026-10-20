@@ -1373,7 +1373,77 @@ class TestAdfToText(unittest.TestCase):
             self.assertLessEqual(strong_count, 1)
 
 
+    def test_link_marks_survive_punctuation_boundaries(self):
+        # Links have no flanking restrictions: a link must survive where
+        # emphasis cannot bind, and combined marks keep full extents.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "build"},
+                        {"type": "text", "text": "#123", "marks": [{"type": "link", "attrs": {"href": "https://x/y"}}]},
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Done"},
+                        {"type": "text", "text": "!", "marks": [{"type": "link", "attrs": {"href": "https://x/y"}}]},
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Label:",
+                            "marks": [
+                                {"type": "link", "attrs": {"href": "https://x/y"}},
+                                {"type": "strong"},
+                            ],
+                        },
+                        {"type": "text", "text": "value"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # The label keeps its text escaping (harmless inside brackets).
+        self.assertEqual(
+            text,
+            "build[\\#123](https://x/y)\n\nDone[!](https://x/y)\n\n[**Label:**](https://x/y)value",
+        )
+        reparsed = markdown_to_adf(text)
+        second = reparsed["content"][1]["content"][1]
+        self.assertEqual(second.get("marks"), [{"type": "link", "attrs": {"href": "https://x/y"}}])
+        third = reparsed["content"][2]["content"][0]
+        self.assertEqual(
+            third.get("marks"),
+            [
+                {"type": "link", "attrs": {"href": "https://x/y"}},
+                {"type": "strong"},
+            ],
+        )
+        self.assertEqual(third["text"], "Label:")
+
+
 class TestMarkdownToAdf(unittest.TestCase):
+    # ADF list items must start with a paragraph, need a child even when the
+    # markdown item is empty, and reject rule children.
+    def test_normalizes_list_item_children_for_adf(self):
+        adf = markdown_to_adf("-\n- - nested\n- item\n\n  ---")
+        items = adf["content"][0]["content"]
+        # Empty item gains an empty paragraph.
+        self.assertEqual(items[0]["content"], [{"type": "paragraph", "content": []}])
+        # An item starting with a nested list gains a leading empty paragraph.
+        self.assertEqual(items[1]["content"][0], {"type": "paragraph", "content": []})
+        self.assertEqual(items[1]["content"][1]["type"], "bulletList")
+        # A rule inside an item degrades to its text.
+        third = items[2]
+        self.assertEqual(third["content"][-1], {"type": "paragraph", "content": [{"type": "text", "text": "---"}]})
     # Inline code keeps only marks ADF allows alongside code (link); anything
     # else (strong, em, strike) would make the document invalid for Jira.
     def test_code_inline_drops_incompatible_inherited_marks(self):
