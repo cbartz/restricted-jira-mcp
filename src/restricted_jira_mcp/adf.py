@@ -203,7 +203,11 @@ def _render_cell(cell: dict[str, Any]) -> str:
         if isinstance(child, dict):
             part = _render_block(child)
             if part:
-                parts.append(" ".join(part.split("\n")))
+                # The pipe-table parser splits on unescaped pipes even inside
+                # code spans; escaping at the cell level reaches them first.
+                # (A content backslash directly before a pipe still gets eaten
+                # by the table parser — no second-level escape exists.)
+                parts.append(" ".join(re.sub(r"(?<!\\)\|", "\\\\|", part).split("\n")))
     return " ".join(parts)
 
 
@@ -270,6 +274,10 @@ def _render_code_span(text: str) -> str:
     """Wrap text in a code span whose backtick fence outlives the content's."""
     longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * max(longest_run + 1, 1)
+    if text and not text.strip():
+        # Whitespace-only content is never stripped by CommonMark, so padding
+        # would ADD spaces; wrap it bare.
+        return f"{fence}{text}{fence}"
     if text.startswith(("`", " ")) or text.endswith(("`", " ")):
         return f"{fence} {text} {fence}"
     return f"{fence}{text}{fence}"
@@ -362,6 +370,14 @@ def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bo
     """
     if not marks:
         return _escape_markdown(text, at_line_start)
+    if any(mark.get("type") == "code" for mark in marks):
+        # Code content is literal: no whitespace trimming (boundary spaces are
+        # code), no backslash escaping inside the span.
+        inner = _render_code_span(text)
+        marks = [mark for mark in marks if mark.get("type") != "code"]
+        for mark in reversed(marks):
+            inner = _wrap_mark(mark, inner)
+        return inner
     lead = re.match(r"^\s*", text).group(0)
     core = text[len(lead):]
     trail_match = re.search(r"\s*$", core)
@@ -369,13 +385,25 @@ def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bo
     core = core[: trail_match.start()]
     if not core:
         return _escape_markdown(lead + trail, at_line_start)
-    if any(mark.get("type") == "code" for mark in marks):
-        # Backslash escapes do not exist inside code spans; the span itself
-        # keeps the content literal, so only its fence length adapts.
-        inner = _render_code_span(core)
-        marks = [mark for mark in marks if mark.get("type") != "code"]
-    else:
-        inner = _escape_markdown(core, at_line_start and not lead)
+    inner = _escape_markdown(core, at_line_start and not lead)
+    for mark in reversed(marks):
+        inner = _wrap_mark(mark, inner)
+    return lead + inner + trail
+
+
+def _wrap_mark(mark: dict[str, Any], text: str) -> str:
+    """Wrap already-escaped inner text in one mark's delimiters."""
+    mark_type = mark.get("type")
+    if mark_type == "strong":
+        return f"**{text}**"
+    if mark_type == "em":
+        return f"*{text}*"
+    if mark_type == "link":
+        href = mark.get("attrs", {}).get("href", "")
+        return f"[{text}]({_render_link_destination(href)})"
+    if mark_type == "strike":
+        return f"~~{text}~~"
+    return text
     for mark in reversed(marks):
         mark_type = mark.get("type")
         if mark_type == "strong":
@@ -392,10 +420,16 @@ def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bo
 
 def _render_link_destination(href: str) -> str:
     """Escape a link destination: bare when plainly safe, otherwise
-    angle-wrapped so parentheses and spaces cannot close it early."""
+    angle-wrapped so parentheses and spaces cannot close it early.
+
+    Backslashes become markdown escapes and entity lookalikes decode on
+    write-back, so both need escaping in either path; a literal backslash
+    still normalizes to ``%5C`` (markdown-it percent-encodes destinations).
+    """
+    escaped = href.replace("\\", "\\\\").replace("&", "\\&")
     if href and not any(char in href for char in " \t\n<>()"):
-        return href
-    wrapped = href.replace("\\", "\\\\").replace("<", "\\<").replace(">", "\\>")
+        return escaped
+    wrapped = escaped.replace("<", "\\<").replace(">", "\\>")
     return f"<{wrapped}>"
 
 

@@ -1032,6 +1032,117 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "first")
 
 
+    def test_code_mark_keeps_boundary_whitespace(self):
+        # The spaces in code content are significant: trimming them out of the
+        # span would change the code on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": " x ", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        # CommonMark strips one boundary space from a span, so the renderer
+        # pads with one on each side to preserve the content's own spaces.
+        self.assertEqual(text, "`  x  `")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], " x ")
+
+    def test_whitespace_only_code_span_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "a", "marks": [{"type": "code"}]}, {"type": "text", "text": "b"}]},
+            ],
+        }
+        # (content is the single space; see doc above)
+        doc2 = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": " ", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        text = adf_to_text(doc2)
+        self.assertEqual(text, "` `")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], " ")
+
+    def test_escapes_pipes_inside_cell_code_spans(self):
+        # The pipe-table parser splits on pipes even inside code spans; the
+        # cell-level escape reaches them before inline parsing.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {"type": "tableRow", "content": [{"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]}]},
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "a|b", "marks": [{"type": "code"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |\n| --- |\n| `a\\|b` |")
+        reparsed = markdown_to_adf(text)
+        cell = reparsed["content"][0]["content"][1]["content"][0]
+        self.assertEqual(cell["content"][0]["content"][0]["text"], "a|b")
+        self.assertEqual(cell["content"][0]["content"][0]["marks"], [{"type": "code"}])
+
+    def test_escapes_link_destination_with_ampersand(self):
+        # An entity lookalike in a destination decodes on write-back and
+        # rewrites the URL.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "q", "marks": [{"type": "link", "attrs": {"href": "https://e.com/?q=&copy;"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[q](https://e.com/?q=\\&copy;)")
+        reparsed = markdown_to_adf(text)
+        self.assertEqual(reparsed["content"][0]["content"][0]["marks"], [{"type": "link", "attrs": {"href": "https://e.com/?q=&copy;"}}])
+
+    def test_link_destination_with_backslash_normalizes(self):
+        # markdown-it percent-encodes a backslash in any destination, so a
+        # literal backslash cannot round trip byte-for-byte; pin the
+        # normalization so it is at least deliberate.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "p", "marks": [{"type": "link", "attrs": {"href": "https://e.com/a\\b"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        reparsed = markdown_to_adf(text)
+        href = reparsed["content"][0]["content"][0]["marks"][0]["attrs"]["href"]
+        self.assertEqual(href, "https://e.com/a%5Cb")
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
