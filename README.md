@@ -149,7 +149,7 @@ For HTTP deployment, see the "Running over HTTP" section above. With HTTP, agent
 
 - `jira_get_issue(issue_key)`
   - Returns full description text (no truncation)
-  - Includes allowlisted custom fields under "custom_fields" (ADF rendered to text, non-ADF values JSON-dumped)
+  - Includes allowlisted custom fields under "custom_fields": ADF-valued fields carry both `text` (readable, full length) and `adf` (the original object — pass it back unchanged when updating, since those fields reject bare strings); non-ADF values JSON-dump; scalars pass through
 - `jira_get_comments(issue_key, max_results=25, start_at=0)`
   - Returns full comment text (no truncation)
 - `jira_search(jql, max_results=25)`

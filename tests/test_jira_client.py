@@ -530,10 +530,16 @@ class JiraClientTests(unittest.TestCase):
         # Check that the custom field was requested
         request_params = session.calls[0][2]["params"]
         self.assertIn("customfield_12345", request_params["fields"])
-        
-        # Check that the custom field is returned in the response
+
+        # Check that the custom field is returned in the response: readable
+        # text plus the original ADF, because a write-back needs an ADF object
+        # (a bare markdown string would be rejected by fields that expect ADF).
         self.assertIn("custom_fields", issue)
-        self.assertEqual(issue["custom_fields"], {"customfield_12345": "Acceptance: it works"})
+        adf_value = payload["fields"]["customfield_12345"]
+        self.assertEqual(
+            issue["custom_fields"],
+            {"customfield_12345": {"text": "Acceptance: it works", "adf": adf_value}},
+        )
 
     def test_get_issue_passes_through_scalar_custom_field(self):
         """Test that get_issue passes through scalar custom fields unchanged."""

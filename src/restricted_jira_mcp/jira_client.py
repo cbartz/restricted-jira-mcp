@@ -95,9 +95,11 @@ class JiraClient:
                 
             value = fields[field_id]
             
-            # Handle ADF documents
+            # Handle ADF documents: readable text plus the original ADF,
+            # because a write-back needs the ADF object — a bare markdown
+            # string is rejected by fields that expect ADF.
             if isinstance(value, dict) and value.get("type") == "doc":
-                custom_fields[field_id] = adf_to_text(value)
+                custom_fields[field_id] = {"text": adf_to_text(value), "adf": value}
             # Handle other complex types (dict, list) by JSON dumping
             elif isinstance(value, (dict, list)):
                 import json
