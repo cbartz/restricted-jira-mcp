@@ -29,7 +29,7 @@ def adf_to_text(value: Any) -> str | None:
 
 
 _BLOCK_TYPES = frozenset(
-    {"paragraph", "heading", "bulletList", "orderedList", "codeBlock", "blockquote", "table"}
+    {"paragraph", "heading", "bulletList", "orderedList", "codeBlock", "blockquote", "table", "rule"}
 )
 
 
@@ -84,6 +84,8 @@ def _render_block(node: dict[str, Any]) -> str:
         return _render_blockquote(node)
     elif node_type == "table":
         return _render_table(node)
+    elif node_type == "rule":
+        return "---"
     else:
         # Unknown node type: render block children structurally and inline
         # children as text, keeping document order.
@@ -132,16 +134,24 @@ def _render_list_item(item: dict[str, Any], prefix: str) -> str:
         if not isinstance(child, dict):
             continue
         if child.get("type") in ("bulletList", "orderedList"):
+            if lines:
+                # A blank line makes the item loose, so a nested list stays a
+                # separate block instead of a lazy continuation.
+                lines.append("")
             nested = _render_blocks([child])
             for line in nested.split("\n"):
-                if line.strip():
-                    lines.append(indent + line)
+                # Blank lines stay blank: indenting them adds nothing, and
+                # dropping them would glue a nested item to its predecessor.
+                lines.append(indent + line if line.strip() else "")
         else:
             child_text = _render_block(child) if _is_block_node(child) else _render_inline_node(child)
             if not child_text:
                 continue
             child_lines = child_text.split("\n")
             if lines:
+                # Sibling blocks inside one item need a blank separator, or a
+                # write-back reads them as one lazy-continued paragraph.
+                lines.append("")
                 lines.extend(indent + line for line in child_lines)
             else:
                 lines.extend(child_lines)

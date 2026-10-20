@@ -44,7 +44,7 @@ class TestAdfToText(unittest.TestCase):
         expected = (
             "Line one\nline two\n\n"
             "**bold** and [link](https://x.y)\n\n"
-            "- a\n- b\n  - b1"
+            "- a\n- b\n\n  - b1"
         )
         self.assertEqual(result, expected)
 
@@ -150,7 +150,7 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        self.assertEqual(result, "- first\n  second")
+        self.assertEqual(result, "- first\n\n  second")
 
     def test_renders_code_block_inside_list_item(self):
         doc = {
@@ -172,7 +172,7 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        self.assertEqual(result, "- item with code\n  ```\n  x = 1\n  ```")
+        self.assertEqual(result, "- item with code\n\n  ```\n  x = 1\n  ```")
 
     def test_renders_nested_list_under_wide_ordered_marker(self):
         # Continuation and nested lines indent by the marker's width, so a
@@ -202,7 +202,7 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        self.assertEqual(result, "10. first\n    - nested")
+        self.assertEqual(result, "10. first\n\n    - nested")
 
     def test_renders_headerless_table_with_all_rows(self):
         # A table without a header row keeps every row: the first row serves
@@ -553,7 +553,7 @@ class TestAdfToText(unittest.TestCase):
         result = adf_to_text(doc)
         # Continuation and nested lines indent by their marker's width: the
         # outer "- " adds two spaces, the inner "2. " adds three.
-        expected = "- top level\n  1. nested 1\n  2. nested 2\n     - deep nested"
+        expected = "- top level\n\n  1. nested 1\n  2. nested 2\n\n     - deep nested"
         self.assertEqual(result, expected)
 
 
@@ -713,6 +713,96 @@ class TestAdfToText(unittest.TestCase):
         }
         text = adf_to_text(doc)
         self.assertEqual(text, "`````\nhas ```` run and `tick`\n`````")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+
+    def test_list_item_paragraphs_round_trip(self):
+        # Sibling blocks inside a list item need a blank separator; without it
+        # CommonMark reads the continuation as the same paragraph (lazy
+        # continuation) and a write-back turns the boundary into a hard break.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- first\n\n  second")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_nested_list_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "top"}]},
+                                {
+                                    "type": "orderedList",
+                                    "attrs": {"order": 1},
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- top\n\n  1. nested")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_rule_as_horizontal_rule(self):
+        # `---` converts to an ADF rule on write; the read side must render it
+        # back, or a created rule silently disappears on the next update.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "above"}]},
+                {"type": "rule"},
+                {"type": "paragraph", "content": [{"type": "text", "text": "below"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "above\n\n---\n\nbelow")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_rule_inside_blockquote(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]},
+                        {"type": "rule"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "> quoted\n>\n> ---")
         self.assertEqual(markdown_to_adf(text), doc)
 
 
