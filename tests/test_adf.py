@@ -699,3 +699,32 @@ class TestAsAdf(unittest.TestCase):
     # as_adf of an empty markdown string yields an empty ADF doc.
     def test_empty_string_returns_empty_doc(self):
         self.assertEqual(as_adf(""), {"type": "doc", "version": 1, "content": []})
+
+    # An empty fenced code block yields a codeBlock with an empty content list,
+    # because ADF rejects empty text nodes.
+    def test_empty_fence_yields_code_block_without_text_node(self):
+        adf = markdown_to_adf("```\n```")
+        code_block = adf["content"][0]
+        self.assertEqual(code_block["type"], "codeBlock")
+        self.assertEqual(code_block["content"], [])
+
+    # An image with empty alt text degrades to a link labelled with the URL,
+    # because an empty text node would be invalid ADF.
+    def test_image_with_empty_alt_uses_url_as_label(self):
+        adf = markdown_to_adf("![](https://img/x.png)")
+        paragraph = adf["content"][0]
+        self.assertEqual(len(paragraph["content"]), 1)
+        text_node = paragraph["content"][0]
+        self.assertEqual(text_node["text"], "https://img/x.png")
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://img/x.png"}}])
+
+    # A link with empty text keeps its target as the link's text.
+    def test_link_with_empty_text_uses_url_as_label(self):
+        adf = markdown_to_adf("see [](https://x.y) now")
+        paragraph = adf["content"][0]
+        texts = [node["text"] for node in paragraph["content"]]
+        self.assertEqual(texts, ["see ", "https://x.y", " now"])
+        self.assertEqual(
+            paragraph["content"][1]["marks"],
+            [{"type": "link", "attrs": {"href": "https://x.y"}}],
+        )

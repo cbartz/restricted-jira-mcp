@@ -360,7 +360,9 @@ def _convert_code_block(node: SyntaxTreeNode) -> dict:
     text = node.content
     if text.endswith("\n"):
         text = text[:-1]
-    block: dict[str, Any] = {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
+    # ADF rejects empty text nodes, so an empty code block carries no content.
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+    block: dict[str, Any] = {"type": "codeBlock", "content": content}
     language = node.info.split()[0] if node.info.strip() else ""
     if language:
         block["attrs"] = {"language": language}
@@ -432,15 +434,26 @@ def _convert_inline_node(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
     if node_type in ("hardbreak", "softbreak"):
         return [{"type": "hardBreak"}]
     if node_type == "image":
-        # ADF media needs upload; images degrade to their alt text as a link to src
-        link_mark = {"type": "link", "attrs": {"href": node.attrGet("src")}}
-        return [_text_node(node.content, marks + [link_mark])]
+        # ADF media needs upload; images degrade to their alt text as a link to
+        # src. An empty alt falls back to the URL so the node stays nonempty.
+        src = node.attrGet("src")
+        label = node.content or src or ""
+        if not label:
+            return []
+        link_mark = {"type": "link", "attrs": {"href": src}}
+        return [_text_node(label, marks + [link_mark])]
     if node_type == "link":
         attrs: dict[str, Any] = {"href": node.attrGet("href")}
         title = node.attrGet("title")
         if title is not None:
             attrs["title"] = title
-        return _convert_inline_nodes(node, marks + [{"type": "link", "attrs": attrs}])
+        nodes = _convert_inline_nodes(node, marks + [{"type": "link", "attrs": attrs}])
+        if not nodes:
+            # Empty link text: keep the target as the label so the URL survives.
+            href = attrs["href"]
+            if href:
+                nodes = [_text_node(href, marks + [{"type": "link", "attrs": attrs}])]
+        return nodes
     if node_type in _MARK_TYPES:
         return _convert_inline_nodes(node, marks + [{"type": _MARK_TYPES[node_type]}])
     # Unknown inline node: recurse into children, or keep its text so nothing
