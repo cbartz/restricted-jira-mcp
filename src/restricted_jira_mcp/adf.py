@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from markdown_it import MarkdownIt
@@ -87,6 +88,11 @@ def _render_block(node: dict[str, Any]) -> str:
     elif node_type == "rule":
         return "---"
     else:
+        # Attribute-only block leaves (blockCard) carry their value in attrs;
+        # a link to the URL keeps it alive across a round trip.
+        url = (node.get("attrs") or {}).get("url")
+        if url and not node.get("content"):
+            return _render_marked_run([{"type": "link", "attrs": {"href": url}}], url, True)
         # Unknown node type: render block children structurally and inline
         # children as text, keeping document order.
         return _render_unknown_block(node)
@@ -207,38 +213,57 @@ _ALWAYS_ESCAPE = frozenset("\\`*[]#<>~|")
 # Ordered-list markers: digits followed by . or ) and whitespace.
 _ORDERED_MARKER_RE = re.compile(r"^\d+([.)])(\s|$)")
 
+# HTML-entity lookalikes decode on write-back (&amp; → &), so their & needs
+# escaping; a bare "R&D" stays readable.
+_ENTITY_LOOKALIKE_RE = re.compile(r"&(?=[A-Za-z][A-Za-z0-9]*;|#[0-9]+;|#[Xx][0-9a-fA-F]+;)")
+
+# A line of only equals signs is a setext underline for the preceding line.
+_SETEXT_UNDERLINE_RE = re.compile(r"^=+\s*$")
+
+
+def _escape_line_start(line: str) -> str:
+    """Escape the one character that would turn this line into structure."""
+    indent = re.match(r"^ {0,3}", line).end()
+    rest = line[indent:]
+    if rest[:1] in ("-", "+"):
+        return line[:indent] + "\\" + rest
+    marker = _ORDERED_MARKER_RE.match(rest)
+    if marker:
+        dot = indent + marker.start(1)
+        return line[:dot] + "\\" + line[dot:]
+    if _SETEXT_UNDERLINE_RE.match(line):
+        return "\\" + line
+    return line
+
 
 def _escape_markdown(text: str, at_line_start: bool) -> str:
     """Backslash-escape the characters that would change meaning on re-parse.
 
-    Only line-initial ``-``/``+`` and ordered markers need line-start
-    treatment; the always-escape set applies everywhere. Intraword underscores
-    stay readable because CommonMark leaves them literal.
+    The always-escape set applies everywhere; line-initial ``-``/``+``,
+    ordered markers, and setext underlines need line-start treatment. Every
+    line after the first is line-initial; the first one only when the run
+    itself is. Intraword underscores stay readable because CommonMark leaves
+    them literal.
     """
-    escaped_chars = []
-    for i, char in enumerate(text):
-        if char == "_":
-            prev_alnum = i > 0 and text[i - 1].isalnum()
-            next_alnum = i + 1 < len(text) and text[i + 1].isalnum()
-            escaped_chars.append(char if prev_alnum and next_alnum else "\\" + char)
-        elif char == "!" and i + 1 < len(text) and text[i + 1] == "[":
-            escaped_chars.append("\\" + char)
-        elif char in _ALWAYS_ESCAPE:
-            escaped_chars.append("\\" + char)
-        else:
-            escaped_chars.append(char)
-    escaped = "".join(escaped_chars)
-    if at_line_start:
-        indent = re.match(r"^ {0,3}", escaped).end()
-        rest = escaped[indent:]
-        if rest[:1] in ("-", "+"):
-            escaped = escaped[:indent] + "\\" + rest
-        else:
-            marker = _ORDERED_MARKER_RE.match(rest)
-            if marker:
-                dot = indent + marker.start(1)
-                escaped = escaped[:dot] + "\\" + escaped[dot:]
-    return escaped
+    escaped_lines = []
+    for i, line in enumerate(text.split("\n")):
+        escaped_chars = []
+        for j, char in enumerate(line):
+            if char == "_":
+                prev_alnum = j > 0 and line[j - 1].isalnum()
+                next_alnum = j + 1 < len(line) and line[j + 1].isalnum()
+                escaped_chars.append(char if prev_alnum and next_alnum else "\\" + char)
+            elif char == "!" and j + 1 < len(line) and line[j + 1] == "[":
+                escaped_chars.append("\\" + char)
+            elif char in _ALWAYS_ESCAPE:
+                escaped_chars.append("\\" + char)
+            else:
+                escaped_chars.append(char)
+        escaped_line = _ENTITY_LOOKALIKE_RE.sub(lambda m: "\\" + m.group(0), "".join(escaped_chars))
+        if i > 0 or at_line_start:
+            escaped_line = _escape_line_start(escaped_line)
+        escaped_lines.append(escaped_line)
+    return "\n".join(escaped_lines)
 
 
 def _render_code_span(text: str) -> str:
@@ -297,6 +322,15 @@ def _render_inline(nodes: list[Any], at_line_start: bool = False) -> str:
             if node_type == "mention":
                 text = node.get("attrs", {}).get("text", "") or _render_inline(node.get("content", []))
                 rendered = _render_marked_run([], text, line_start) if text else ""
+            elif node_type == "status":
+                text = (node.get("attrs") or {}).get("text", "")
+                rendered = _render_marked_run([], text, line_start) if text else ""
+            elif node_type == "emoji":
+                attrs = node.get("attrs") or {}
+                text = attrs.get("text") or attrs.get("shortName") or ""
+                rendered = _render_marked_run([], text, line_start) if text else ""
+            elif node_type == "date":
+                rendered = _render_date_node(node.get("attrs") or {}, line_start)
             else:
                 rendered = _render_inline(node.get("content", []), line_start)
                 if not rendered:
@@ -363,6 +397,17 @@ def _render_link_destination(href: str) -> str:
         return href
     wrapped = href.replace("\\", "\\\\").replace("<", "\\<").replace(">", "\\>")
     return f"<{wrapped}>"
+
+
+def _render_date_node(attrs: dict[str, Any], at_line_start: bool) -> str:
+    """Render a date node's timestamp as an ISO date; the widget degrades to
+    text because markdown cannot express a date picker."""
+    timestamp = attrs.get("timestamp")
+    try:
+        moment = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return _render_marked_run([], str(timestamp or ""), at_line_start) if timestamp else ""
+    return _render_marked_run([], moment.strftime("%Y-%m-%d"), at_line_start)
 
 
 # Parser for the Markdown → ADF write path: CommonMark plus the table and

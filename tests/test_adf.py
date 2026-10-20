@@ -961,6 +961,77 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://x.y/page"}}])
 
 
+    def test_renders_block_card_url(self):
+        # A blockCard stores its link in attrs.url with no content children;
+        # dropping it would delete the link on a read→update round trip.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "blockCard", "attrs": {"url": "https://x.y/page"}},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[https://x.y/page](https://x.y/page)")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "https://x.y/page")
+
+    def test_renders_status_emoji_and_date_nodes(self):
+        # Attribute-only inline nodes carry their value in attrs; a status
+        # labelled "Blocked" must not read as empty.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "status", "attrs": {"text": "Blocked", "color": "neutral"}},
+                        {"type": "text", "text": " "},
+                        {"type": "emoji", "attrs": {"shortName": ":smile:", "text": "😀"}},
+                        {"type": "text", "text": " due "},
+                        {"type": "date", "attrs": {"timestamp": "1575799606000"}},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "Blocked 😀 due 2019-12-08")
+
+    def test_escapes_entity_references_in_text(self):
+        # HTML entities decode on write-back: literal "&amp;" would become "&".
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "R&amp;D and &copy;"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "plain R&D stays readable"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "R\\&amp;D and \\&copy;\n\nplain R&D stays readable")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "R&amp;D and &copy;")
+
+    def test_escapes_setext_underline_after_hard_break(self):
+        # "first\n===" would become a setext heading on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "==="},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "first\n\\===")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "first")
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
