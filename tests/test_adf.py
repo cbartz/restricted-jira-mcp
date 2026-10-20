@@ -696,7 +696,9 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         text = adf_to_text(doc)
-        self.assertEqual(text, "```\nx = 1\n```")
+        # The blank line keeps the trailing newline: the write path strips
+        # exactly one fence-content newline.
+        self.assertEqual(text, "```\nx = 1\n\n```")
         self.assertEqual(markdown_to_adf(text), doc)
 
     def test_code_block_with_embedded_backticks_round_trips(self):

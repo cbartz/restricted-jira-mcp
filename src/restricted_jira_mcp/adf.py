@@ -74,11 +74,12 @@ def _render_block(node: dict[str, Any]) -> str:
         )
         longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
         fence = "`" * max(longest_run + 1, 3)
-        if text and not text.endswith("\n"):
-            text += "\n"
+        # The closing fence always gets its own line: markdown-it ends fence
+        # content with a newline, which the write path strips, so this yields
+        # an exact round trip whether or not the ADF text ends with one.
         if language:
-            return f"{fence}{language}\n{text}{fence}"
-        return f"{fence}\n{text}{fence}"
+            return f"{fence}{language}\n{text}\n{fence}"
+        return f"{fence}\n{text}\n{fence}"
     elif node_type == "blockquote":
         return _render_blockquote(node)
     elif node_type == "table":
