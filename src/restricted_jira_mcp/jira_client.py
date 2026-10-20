@@ -137,10 +137,10 @@ class JiraClient:
         max_results: int = 25,
         start_at: int = 0,
     ) -> dict[str, Any]:
-        self.policy.ensure_issue_allowed(issue_key)
+        resolved_key = self._resolve_issue(issue_key)
         capped = max(1, min(max_results, MAX_COMMENTS_PER_PAGE))
         response = self.session.get(
-            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
+            self._url(f"/rest/api/3/issue/{resolved_key}/comment"),
             params={
                 "startAt": max(0, start_at),
                 "maxResults": capped,
@@ -150,7 +150,7 @@ class JiraClient:
         )
         payload = self._json_response(response)
         return {
-            "issue_key": issue_key.upper(),
+            "issue_key": resolved_key,
             "start_at": payload.get("startAt"),
             "max_results": payload.get("maxResults"),
             "total": payload.get("total"),
@@ -278,9 +278,9 @@ class JiraClient:
         }
 
     def add_comment(self, issue_key: str, body: str | dict) -> dict[str, Any]:
-        self.policy.ensure_issue_allowed(issue_key)
+        resolved_key = self._resolve_issue(issue_key)
         response = self.session.post(
-            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment"),
+            self._url(f"/rest/api/3/issue/{resolved_key}/comment"),
             json={"body": as_adf(body)},
             timeout=30,
         )
@@ -290,38 +290,40 @@ class JiraClient:
         """Update a comment on an allowlisted issue, restricted to own comments."""
         self.policy.ensure_issue_allowed(issue_key)
         self._validate_comment_id(comment_id)
+        resolved_key = self._resolve_issue(issue_key)
         own_account_id = self._myself_account_id()
-        
+
         # Get the comment to verify it exists and belongs to the current user
-        comment = self._ensure_own_comment(issue_key, comment_id, own_account_id)
-        
+        comment = self._ensure_own_comment(resolved_key, comment_id, own_account_id)
+
         # Update the comment
         response = self.session.put(
-            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            self._url(f"/rest/api/3/issue/{resolved_key}/comment/{comment_id}"),
             json={"body": as_adf(body)},
             timeout=30,
         )
         self._raise_for_status(response)
-        
-        return {"status": "updated", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+        return {"status": "updated", "issue_key": resolved_key, "comment_id": comment_id}
 
     def delete_comment(self, issue_key: str, comment_id: str) -> dict[str, Any]:
         """Delete a comment on an allowlisted issue, restricted to own comments."""
         self.policy.ensure_issue_allowed(issue_key)
         self._validate_comment_id(comment_id)
+        resolved_key = self._resolve_issue(issue_key)
         own_account_id = self._myself_account_id()
-        
+
         # Get the comment to verify it exists and belongs to the current user
-        self._ensure_own_comment(issue_key, comment_id, own_account_id)
-        
+        self._ensure_own_comment(resolved_key, comment_id, own_account_id)
+
         # Delete the comment
         response = self.session.delete(
-            self._url(f"/rest/api/3/issue/{issue_key.upper()}/comment/{comment_id}"),
+            self._url(f"/rest/api/3/issue/{resolved_key}/comment/{comment_id}"),
             timeout=30,
         )
         self._raise_for_status(response)
-        
-        return {"status": "deleted", "issue_key": issue_key.upper(), "comment_id": comment_id}
+
+        return {"status": "deleted", "issue_key": resolved_key, "comment_id": comment_id}
 
     def _myself_account_id(self) -> str:
         """Get the current user's account ID, cached per client instance."""
@@ -330,6 +332,23 @@ class JiraClient:
             payload = self._json_response(response)
             self._cached_account_id = payload["accountId"]
         return self._cached_account_id
+
+    def _resolve_issue(self, issue_key: str) -> str:
+        """Return the canonical key after proving the resolved issue is allowlisted.
+
+        The key prefix alone is not proof: Jira can resolve a historical key
+        after an issue moved, so the resolved project decides, exactly like
+        get_issue checking its own response.
+        """
+        self.policy.ensure_issue_allowed(issue_key)
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{issue_key.upper()}"),
+            params={"fields": "project"},
+            timeout=30,
+        )
+        payload = self._json_response(response)
+        self.policy.ensure_response_issue_allowed(payload)
+        return payload.get("key") or issue_key.upper()
 
     def _validate_comment_id(self, comment_id: str) -> None:
         """Validate comment ID format using regex pattern."""

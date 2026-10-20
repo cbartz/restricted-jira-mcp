@@ -272,21 +272,70 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertEqual(session.calls, [])
 
+    def test_get_comments_rejects_issue_resolved_to_disallowed_project(self):
+        # A historical key can resolve after an issue moved; the resolved
+        # project decides, not the key prefix.
+        session = FakeSession()
+        session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "NDA"))]
+
+        with self.assertRaises(PolicyError):
+            client(session).get_comments("ISD-5444")
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(session.calls[0][1].endswith("/rest/api/3/issue/ISD-5444"))
+
+    def test_add_comment_rejects_issue_resolved_to_disallowed_project(self):
+        session = FakeSession()
+        session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "NDA"))]
+
+        with self.assertRaises(PolicyError):
+            client(session).add_comment("ISD-5444", "hi")
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(session.calls[0][1].endswith("/rest/api/3/issue/ISD-5444"))
+
+    def test_update_comment_rejects_issue_resolved_to_disallowed_project(self):
+        session = FakeSession()
+        session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "NDA"))]
+
+        with self.assertRaises(PolicyError):
+            client(session).update_comment("ISD-5444", "10001", "new text")
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(session.calls[0][1].endswith("/rest/api/3/issue/ISD-5444"))
+
+    def test_get_comments_uses_resolved_canonical_key(self):
+        # When Jira answers a historical key with the moved issue's current
+        # key, later comment requests target the canonical key.
+        session = FakeSession()
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-9999", "ISD")),
+            FakeResponse(200, {"startAt": 0, "maxResults": 50, "total": 0, "comments": []}),
+        ]
+
+        result = client(session).get_comments("isd-5444")
+
+        self.assertEqual(result["issue_key"], "ISD-9999")
+        self.assertTrue(session.calls[1][1].endswith("/rest/api/3/issue/ISD-9999/comment"))
+
     def test_get_comments_returns_paged_flattened_comments(self):
         session = FakeSession()
-        session.next_get = FakeResponse(
-            200,
-            {
-                "startAt": 0,
-                "maxResults": 50,
-                "total": 1,
-                "comments": [comment_payload("10001", "Looks good to me")],
-            },
-        )
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(
+                200,
+                {
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "total": 1,
+                    "comments": [comment_payload("10001", "Looks good to me")],
+                },
+            ),
+        ]
 
         result = client(session).get_comments("isd-5444", max_results=200, start_at=5)
 
-        method, url, kwargs = session.calls[0]
+        method, url, kwargs = session.calls[1]
         self.assertEqual(method, "GET")
         self.assertTrue(url.endswith("/rest/api/3/issue/ISD-5444/comment"))
         self.assertEqual(
@@ -319,7 +368,10 @@ class JiraClientTests(unittest.TestCase):
         restricted = comment_payload("10002", "Internal note")
         restricted["visibility"] = {"type": "role", "value": "Administrators"}
         restricted["jsdPublic"] = False
-        session.next_get = FakeResponse(200, {"total": 1, "comments": [restricted]})
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"total": 1, "comments": [restricted]}),
+        ]
 
         result = client(session).get_comments("ISD-5444")
 
@@ -331,15 +383,18 @@ class JiraClientTests(unittest.TestCase):
         # get_comments returns comment bodies in full, without any truncation marker.
         session = FakeSession()
         body_text = "y" * 2500
-        session.next_get = FakeResponse(
-            200,
-            {
-                "startAt": 0,
-                "maxResults": 50,
-                "total": 1,
-                "comments": [comment_payload("10001", body_text)],
-            },
-        )
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(
+                200,
+                {
+                    "startAt": 0,
+                    "maxResults": 50,
+                    "total": 1,
+                    "comments": [comment_payload("10001", body_text)],
+                },
+            ),
+        ]
 
         result = client(session).get_comments("ISD-5444")
 
@@ -429,11 +484,12 @@ class JiraClientTests(unittest.TestCase):
     def test_add_comment_converts_markdown_body(self):
         """Test that add_comment converts Markdown body to ADF."""
         session = FakeSession()
+        session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "ISD"))]
         session.next_post = FakeResponse(201, {"id": "10001"})
-        
+
         client(session).add_comment("ISD-5444", "Hello **world**")
-        
-        request_json = session.calls[0][2]["json"]
+
+        request_json = session.calls[1][2]["json"]
         body = request_json["body"]
         self.assertEqual(body["type"], "doc")
         self.assertEqual(body["version"], 1)
@@ -522,97 +578,95 @@ class JiraClientTests(unittest.TestCase):
     def test_update_comment_puts_adf_body_to_scoped_path(self):
         """Test that update_comment puts ADF body to the scoped path."""
         from restricted_jira_mcp.adf import as_adf
-        
+
         session = FakeSession()
-        # Set up get_responses queue for myself and comment endpoints
-        myself_payload = {"accountId": "acc-1"}
-        comment_payload_data = comment_payload("10001", "old")
+        # Set up get_responses queue for issue resolution, myself and comment
         session.get_responses = [
-            FakeResponse(200, myself_payload),
-            FakeResponse(200, comment_payload_data),
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"accountId": "acc-1"}),
+            FakeResponse(200, comment_payload("10001", "old")),
         ]
-        
+
         result = client(session).update_comment("ISD-5444", "10001", "new text")
-        
-        # Check call sequence
-        self.assertEqual(len(session.calls), 3)
-        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
-        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
-        self.assertEqual(session.calls[2][0], "PUT")
-        self.assertTrue(session.calls[2][1].endswith("/rest/api/3/issue/ISD-5444/comment/10001"))
-        self.assertEqual(session.calls[2][2]["json"], {"body": as_adf("new text")})
-        
+
+        # Check call sequence: resolve issue, myself, comment, then PUT
+        self.assertEqual(len(session.calls), 4)
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[2], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        self.assertEqual(session.calls[3][0], "PUT")
+        self.assertTrue(session.calls[3][1].endswith("/rest/api/3/issue/ISD-5444/comment/10001"))
+        self.assertEqual(session.calls[3][2]["json"], {"body": as_adf("new text")})
+
         # Check result
         self.assertEqual(result, {"status": "updated", "issue_key": "ISD-5444", "comment_id": "10001"})
 
     def test_update_comment_rejects_foreign_author(self):
         """Test that update_comment rejects comments authored by foreign users."""
         session = FakeSession()
-        # Set up get_responses queue for myself and comment endpoints
-        myself_payload = {"accountId": "acc-1"}
+        # Set up get_responses queue for issue resolution, myself and comment
         foreign_comment_payload = comment_payload("10001", "old")
         foreign_comment_payload["author"]["accountId"] = "acc-2"  # Foreign author
         session.get_responses = [
-            FakeResponse(200, myself_payload),
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"accountId": "acc-1"}),
             FakeResponse(200, foreign_comment_payload),
         ]
-        
+
         with self.assertRaises(JiraClientError) as cm:
             client(session).update_comment("ISD-5444", "10001", "new text")
-        
+
         self.assertIn("own comments", str(cm.exception))
         self.assertIn("10001", str(cm.exception))
-        
+
         # Check that only GET calls were made
-        self.assertEqual(len(session.calls), 2)
-        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
-        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[2], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
 
     def test_delete_comment_deletes_scoped_path(self):
         """Test that delete_comment deletes the scoped path."""
         session = FakeSession()
-        # Set up get_responses queue for myself and comment endpoints
-        myself_payload = {"accountId": "acc-1"}
-        comment_payload_data = comment_payload("10001", "old")
+        # Set up get_responses queue for issue resolution, myself and comment
         session.get_responses = [
-            FakeResponse(200, myself_payload),
-            FakeResponse(200, comment_payload_data),
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"accountId": "acc-1"}),
+            FakeResponse(200, comment_payload("10001", "old")),
         ]
-        
+
         result = client(session).delete_comment("ISD-5444", "10001")
-        
-        # Check call sequence
-        self.assertEqual(len(session.calls), 3)
-        self.assertEqual(session.calls[0], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
-        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
-        self.assertEqual(session.calls[2], ("DELETE", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
-        
+
+        # Check call sequence: resolve issue, myself, comment, then DELETE
+        self.assertEqual(len(session.calls), 4)
+        self.assertEqual(session.calls[1], ("GET", "https://example.atlassian.net/rest/api/3/myself", {"timeout": 30}))
+        self.assertEqual(session.calls[2], ("GET", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+        self.assertEqual(session.calls[3], ("DELETE", "https://example.atlassian.net/rest/api/3/issue/ISD-5444/comment/10001", {"timeout": 30}))
+
         # Check result
         self.assertEqual(result, {"status": "deleted", "issue_key": "ISD-5444", "comment_id": "10001"})
 
     def test_myself_called_once_across_operations(self):
         """Test that /myself endpoint is called only once across multiple operations."""
         session = FakeSession()
-        # Set up get_responses queue for myself and comment endpoints
-        myself_payload = {"accountId": "acc-1"}
         comment_payload_data = comment_payload("10001", "old")
         session.get_responses = [
-            FakeResponse(200, myself_payload),  # First call gets myself
-            FakeResponse(200, comment_payload_data),  # First call gets comment
-            FakeResponse(200, comment_payload_data),  # Second call gets comment
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"accountId": "acc-1"}),
+            FakeResponse(200, comment_payload_data),
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, comment_payload_data),
         ]
-        
+
         # Make two update_comment calls on the same client instance
         client_instance = client(session)
         client_instance.update_comment("ISD-5444", "10001", "new text 1")
         client_instance.update_comment("ISD-5444", "10001", "new text 2")
-        
+
         # Check that /myself was called only once
         myself_calls = [call for call in session.calls if call[1].endswith("/rest/api/3/myself")]
         self.assertEqual(len(myself_calls), 1)
-        
-        # Verify the total number of calls (myself + 2 comment GETs + 2 PUTs)
-        self.assertEqual(len(session.calls), 5)
+
+        # Verify the total number of calls (2 issue GETs + myself + 2 comment GETs + 2 PUTs)
+        self.assertEqual(len(session.calls), 7)
 
     def test_comment_edit_delete_error_cases(self):
         """Test error cases for comment edit/delete operations."""
@@ -645,12 +699,15 @@ class JiraClientTests(unittest.TestCase):
         # Test 404 comment
         with self.subTest("404 comment"):
             session = FakeSession()
-            myself_payload = {"accountId": "acc-1"}
-            session.get_responses = [FakeResponse(200, myself_payload), FakeResponse(404)]
+            session.get_responses = [
+                FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                FakeResponse(200, {"accountId": "acc-1"}),
+                FakeResponse(404),
+            ]
             with self.assertRaises(JiraClientError) as cm:
                 client(session).update_comment("ISD-5444", "99999", "new text")
             self.assertIn("99999", str(cm.exception))
-            self.assertEqual(len(session.calls), 2)  # Only GET calls
+            self.assertEqual(len(session.calls), 3)  # Only GET calls
 
 
 if __name__ == "__main__":
