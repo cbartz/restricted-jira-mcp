@@ -182,13 +182,17 @@ def _render_table(node: dict[str, Any]) -> str:
     ]
     if not rows:
         return ""
-    rendered = []
+    cell_rows = []
     for row in rows:
         cells = [cell for cell in row.get("content", []) if isinstance(cell, dict)]
-        texts = [_render_cell(cell) for cell in cells]
-        rendered.append("| " + " | ".join(texts) + " |")
-    first_row_cells = [cell for cell in rows[0].get("content", []) if isinstance(cell, dict)]
-    separator = "| " + " | ".join(["---"] * len(first_row_cells)) + " |"
+        cell_rows.append([_render_cell(cell) for cell in cells])
+    # Markdown sizes the table by its column count, and Jira tables can be
+    # ragged (merged cells): pad every row to the widest one so no cell is
+    # dropped on write-back.
+    width = max(len(texts) for texts in cell_rows)
+    cell_rows = [texts + [""] * (width - len(texts)) for texts in cell_rows]
+    rendered = ["| " + " | ".join(texts) + " |" for texts in cell_rows]
+    separator = "| " + " | ".join(["---"] * width) + " |"
     return "\n".join([rendered[0], separator] + rendered[1:])
 
 
@@ -221,8 +225,9 @@ _ORDERED_MARKER_RE = re.compile(r"^\d+([.)])(\s|$)")
 # escaping; a bare "R&D" stays readable.
 _ENTITY_LOOKALIKE_RE = re.compile(r"&(?=[A-Za-z][A-Za-z0-9]*;|#[0-9]+;|#[Xx][0-9a-fA-F]+;)")
 
-# A line of only equals signs is a setext underline for the preceding line.
-_SETEXT_UNDERLINE_RE = re.compile(r"^=+\s*$")
+# A line of only equals signs is a setext underline for the preceding line;
+# up to three leading spaces still count.
+_SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}=+\s*$")
 
 
 def _escape_line_start(line: str) -> str:
@@ -236,7 +241,7 @@ def _escape_line_start(line: str) -> str:
         dot = indent + marker.start(1)
         return line[:dot] + "\\" + line[dot:]
     if _SETEXT_UNDERLINE_RE.match(line):
-        return "\\" + line
+        return line[:indent] + "\\" + line[indent:]
     return line
 
 
@@ -400,7 +405,12 @@ def _wrap_mark(mark: dict[str, Any], text: str) -> str:
         return f"*{text}*"
     if mark_type == "link":
         href = mark.get("attrs", {}).get("href", "")
-        return f"[{text}]({_render_link_destination(href)})"
+        title = mark.get("attrs", {}).get("title")
+        destination = _render_link_destination(href)
+        if title:
+            escaped_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("&", "\\&")
+            return f'[{text}]({destination} "{escaped_title}")'
+        return f"[{text}]({destination})"
     if mark_type == "strike":
         return f"~~{text}~~"
     return text
@@ -609,7 +619,10 @@ def _convert_inline_node(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
             return []
         return [_text_node(node.content, marks)]
     if node_type == "code_inline":
-        return [_text_node(node.content, marks + [{"type": "code"}])]
+        # ADF allows the code mark only alongside link; anything else
+        # (strong, em, strike inherited from nesting) makes the node invalid.
+        compatible = [mark for mark in marks if mark.get("type") == "link"]
+        return [_text_node(node.content, compatible + [{"type": "code"}])]
     if node_type in ("hardbreak", "softbreak"):
         return [{"type": "hardBreak"}]
     if node_type == "image":
