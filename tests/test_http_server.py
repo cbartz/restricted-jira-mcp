@@ -117,8 +117,9 @@ class HTTPTransportTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["result"].get("isError", False))
-        self.assertEqual(len(self.session.calls), 1)
-        method, url, kwargs = self.session.calls[0]
+        # The issue-resolution GET precedes the comment POST.
+        self.assertEqual(len(self.session.calls), 2)
+        method, url, kwargs = self.session.calls[1]
         self.assertEqual(method, "POST")
         self.assertTrue(url.endswith("/rest/api/3/issue/ISD-5444/comment"))
         self.assertEqual(kwargs["json"], {"body": adf_body})
