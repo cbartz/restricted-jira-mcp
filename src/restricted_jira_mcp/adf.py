@@ -253,61 +253,116 @@ def _render_code_span(text: str) -> str:
 def _render_inline(nodes: list[Any], at_line_start: bool = False) -> str:
     """Render a list of inline nodes with proper formatting.
 
-    at_line_start marks whether the first node sits at the start of a markdown
-    line; a hard break makes every following node line-initial too, which
-    matters for escaping list markers.
+    Adjacent text nodes sharing identical marks render as one run, with
+    boundary whitespace moved outside the delimiters (markdown emphasis
+    cannot bind across a boundary space). at_line_start marks whether the
+    first node sits at the start of a markdown line; a hard break makes every
+    following node line-initial too.
     """
-    parts = []
+    parts: list[str] = []
     line_start = at_line_start
-    for node in nodes:
-        if isinstance(node, dict):
-            part = _render_inline_node(node, line_start)
-            if part:
-                parts.append(part)
-                line_start = part.endswith("\n")
+    pending_marks: list[dict[str, Any]] = []
+    pending_text = ""
+    pending_open = False
 
+    def flush() -> None:
+        nonlocal pending_marks, pending_text, pending_open, line_start
+        if not pending_open:
+            return
+        if pending_text:
+            rendered = _render_marked_run(pending_marks, pending_text, line_start)
+            parts.append(rendered)
+            line_start = rendered.endswith("\n")
+        pending_marks = []
+        pending_text = ""
+        pending_open = False
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("type")
+        if node_type == "hardBreak":
+            flush()
+            parts.append("\n")
+            line_start = True
+        elif node_type == "text":
+            marks = node.get("marks", [])
+            if not pending_open or marks != pending_marks:
+                flush()
+                pending_marks = marks
+                pending_open = True
+            pending_text += node.get("text", "")
+        else:
+            flush()
+            if node_type == "mention":
+                text = node.get("attrs", {}).get("text", "") or _render_inline(node.get("content", []))
+                rendered = _render_marked_run([], text, line_start) if text else ""
+            else:
+                rendered = _render_inline(node.get("content", []), line_start)
+                if not rendered:
+                    # Attribute-only leaves like inlineCard carry their value
+                    # in attrs; the URL still deserves a link on write-back.
+                    url = (node.get("attrs") or {}).get("url")
+                    if url:
+                        rendered = _render_marked_run(
+                            [{"type": "link", "attrs": {"href": url}}], url, line_start
+                        )
+            if rendered:
+                parts.append(rendered)
+                line_start = rendered.endswith("\n")
+    flush()
     return "".join(parts)
 
 
 def _render_inline_node(node: dict[str, Any], at_line_start: bool = False) -> str:
-    """Render a single inline node."""
-    node_type = node.get("type")
+    """Render a single inline node (see _render_inline for the rules)."""
+    return _render_inline([node], at_line_start)
 
-    if node_type == "text":
-        text = node.get("text", "")
-        # Apply marks to this text node
-        marks = node.get("marks", [])
-        if any(mark.get("type") == "code" for mark in marks):
-            # Backslash escapes do not exist inside code spans; the span itself
-            # keeps the content literal, so only its fence length adapts.
-            text = _render_code_span(text)
-            marks = [mark for mark in marks if mark.get("type") != "code"]
-        else:
-            text = _escape_markdown(text, at_line_start)
-        for mark in reversed(marks):
-            mark_type = mark.get("type")
-            if mark_type == "strong":
-                text = f"**{text}**"
-            elif mark_type == "em":
-                text = f"*{text}*"
-            elif mark_type == "link":
-                href = mark.get("attrs", {}).get("href", "")
-                text = f"[{text}]({href})"
-            elif mark_type == "strike":
-                text = f"~~{text}~~"
-        return text
-    elif node_type == "hardBreak":
-        return "\n"
-    elif node_type == "mention":
-        # Check for text in attrs first, then in content
-        text = node.get("attrs", {}).get("text", "")
-        if not text:
-            text = _render_inline(node.get("content", []))
-        return text
+
+def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bool) -> str:
+    """Render one run of text sharing identical marks.
+
+    Boundary whitespace moves outside the delimiters: `**bold **` is not a
+    closing delimiter in CommonMark, so wrapping ``bold `` directly would
+    turn the mark into literal asterisks on write-back.
+    """
+    if not marks:
+        return _escape_markdown(text, at_line_start)
+    lead = re.match(r"^\s*", text).group(0)
+    core = text[len(lead):]
+    trail_match = re.search(r"\s*$", core)
+    trail = trail_match.group(0)
+    core = core[: trail_match.start()]
+    if not core:
+        return _escape_markdown(lead + trail, at_line_start)
+    if any(mark.get("type") == "code" for mark in marks):
+        # Backslash escapes do not exist inside code spans; the span itself
+        # keeps the content literal, so only its fence length adapts.
+        inner = _render_code_span(core)
+        marks = [mark for mark in marks if mark.get("type") != "code"]
     else:
-        # For other unknown inline nodes, try to render their content
-        content = node.get("content", [])
-        return _render_inline(content, at_line_start)
+        inner = _escape_markdown(core, at_line_start and not lead)
+    for mark in reversed(marks):
+        mark_type = mark.get("type")
+        if mark_type == "strong":
+            inner = f"**{inner}**"
+        elif mark_type == "em":
+            inner = f"*{inner}*"
+        elif mark_type == "link":
+            href = mark.get("attrs", {}).get("href", "")
+            inner = f"[{inner}]({_render_link_destination(href)})"
+        elif mark_type == "strike":
+            inner = f"~~{inner}~~"
+    return lead + inner + trail
+
+
+def _render_link_destination(href: str) -> str:
+    """Escape a link destination: bare when plainly safe, otherwise
+    angle-wrapped so parentheses and spaces cannot close it early."""
+    if href and not any(char in href for char in " \t\n<>()"):
+        return href
+    wrapped = href.replace("\\", "\\\\").replace("<", "\\<").replace(">", "\\>")
+    return f"<{wrapped}>"
 
 
 # Parser for the Markdown → ADF write path: CommonMark plus the table and

@@ -874,6 +874,93 @@ class TestAdfToText(unittest.TestCase):
         )
 
 
+    def test_marked_boundary_whitespace_moves_outside_delimiters(self):
+        # `**bold **text` does not close the emphasis in CommonMark, so the
+        # trailing space of a marked node must move outside the delimiters.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "bold ", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "text"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**bold** text")
+        reparsed = markdown_to_adf(text)
+        paragraph = reparsed["content"][0]
+        self.assertTrue(any(m.get("type") == "strong" for m in paragraph["content"][0].get("marks", [])))
+        self.assertEqual("".join(n.get("text", "") for n in paragraph["content"]), "bold text")
+
+    def test_marked_node_of_only_whitespace_stays_text(self):
+        # A whitespace-only marked node cannot carry delimiters; the whitespace
+        # itself must survive.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": "  ", "marks": [{"type": "em"}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "a  b")
+        # Markdown cannot express emphasis on whitespace alone: the text
+        # survives, the mark does not.
+        reparsed_node = markdown_to_adf(text)["content"][0]["content"][0]
+        self.assertEqual(reparsed_node.get("text"), "a  b")
+        self.assertNotIn("marks", reparsed_node)
+
+    def test_escapes_link_destination_parentheses(self):
+        # An unescaped `)` inside the destination closes it early and rewrites
+        # both the URL and the surrounding text.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "label", "marks": [{"type": "link", "attrs": {"href": "https://example.com/a)b"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[label](<https://example.com/a)b>)")
+        reparsed = markdown_to_adf(text)
+        text_node = reparsed["content"][0]["content"][0]
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://example.com/a)b"}}])
+
+    def test_renders_inline_card_url_from_attrs(self):
+        # Jira smart links carry their URL in attrs.url with no content nodes;
+        # dropping them silently loses the link on read→update.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://x.y/page"}}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[https://x.y/page](https://x.y/page)")
+        reparsed = markdown_to_adf(text)
+        text_node = reparsed["content"][0]["content"][0]
+        self.assertEqual(text_node["text"], "https://x.y/page")
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://x.y/page"}}])
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
