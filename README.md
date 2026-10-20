@@ -67,10 +67,10 @@ Serve over HTTP with bearer token authentication:
 python3 -m restricted_jira_mcp.server --transport http --host 127.0.0.1 --port 8000
 ```
 
-Client tokens are stored in `JIRA_MCP_CLIENT_TOKENS_FILE` as SHA-256 hex digests, one per line. Create a token hash with:
+Client tokens are stored in `JIRA_MCP_CLIENT_TOKENS_FILE` as SHA-256 hex digests, one per line. Create a token hash with (the `cut` drops the trailing `-` filename that `sha256sum` prints, which the server would reject):
 
 ```bash
-printf '%s' 'your-client-token' | sha256sum
+printf '%s' 'your-client-token' | sha256sum | cut -d' ' -f1
 ```
 
 The hash file is read once at startup, so adding or removing a client token requires a server restart to take effect.
