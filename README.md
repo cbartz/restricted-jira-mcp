@@ -14,8 +14,10 @@ Set these environment variables locally:
 export JIRA_BASE_URL="https://your-company.atlassian.net"
 export JIRA_EMAIL="you@example.com"
 export JIRA_API_TOKEN="your-token"
-# OR use JIRA_API_TOKEN_FILE to load token from a file (set only one of these)
-export JIRA_API_TOKEN_FILE="/path/to/token/file"
+# To load the token from a file instead, unset JIRA_API_TOKEN first — the
+# server refuses to start with both set:
+# unset JIRA_API_TOKEN
+# export JIRA_API_TOKEN_FILE="/path/to/token/file"
 export JIRA_ALLOWED_PROJECTS="ISD,ISREQ"
 ```
 
@@ -150,6 +152,7 @@ For HTTP deployment, see the "Running over HTTP" section above. With HTTP, agent
 - `jira_get_issue(issue_key)`
   - Returns full description text (no truncation)
   - Includes allowlisted custom fields under "custom_fields": ADF-valued fields carry both `text` (readable, full length) and `adf` (the original object — pass it back unchanged when updating, since those fields reject bare strings); non-ADF values JSON-dump; scalars pass through
+  - When a description or comment body embeds uploaded media (which markdown cannot represent), the response also carries the original object as `description_adf` / `body_adf` — include it unchanged in the update's fields/body to avoid deleting the attachments
 - `jira_get_comments(issue_key, max_results=25, start_at=0)`
   - Returns full comment text (no truncation)
 - `jira_search(jql, max_results=25)`
@@ -173,6 +176,8 @@ Descriptions and comment bodies accept:
 - Markdown (headings, lists, bold/italic/code, links, tables; line breaks preserved)
 - Raw ADF doc dict
 - Wiki markup is NOT supported
+
+Reads render ADF to Markdown-shaped text losslessly for the structures above. Content markdown cannot express (embedded media, Jira widgets like status lozenges, dates, and smart links) degrades to readable text — a `status` becomes its label, a `date` becomes its ISO date, a smart link becomes a plain link, and uploaded media only survives an update if you pass the original ADF back (see `description_adf` / `body_adf` above).
 
 For example:
 

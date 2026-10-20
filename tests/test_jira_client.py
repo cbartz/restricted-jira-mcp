@@ -569,6 +569,61 @@ class JiraClientTests(unittest.TestCase):
         expected_value = json.dumps({"value": "Blocked", "id": "1"})
         self.assertEqual(issue["custom_fields"], {"customfield_12345": expected_value})
 
+    def test_get_issue_exposes_raw_adf_for_media_bearing_descriptions(self):
+        # Markdown cannot represent uploaded media; without the original ADF,
+        # a read→update round trip would silently delete embedded images.
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        media_description = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Screenshot:"}]},
+                {
+                    "type": "mediaSingle",
+                    "attrs": {"id": "att-1", "type": "file", "collection": "content"},
+                    "content": [],
+                },
+            ],
+        }
+        payload["fields"]["description"] = media_description
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertEqual(issue["description"], "Screenshot:")
+        self.assertEqual(issue["description_adf"], media_description)
+
+    def test_get_issue_omits_raw_adf_for_representable_descriptions(self):
+        # Ordinary descriptions need no raw ADF; keep responses lean.
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["description"] = adf_doc("plain text")
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertNotIn("description_adf", issue)
+
+    def test_get_comments_exposes_raw_adf_for_media_bearing_bodies(self):
+        session = FakeSession()
+        media_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "mediaSingle", "attrs": {"id": "att-2", "type": "file"}, "content": []}],
+        }
+        comment = comment_payload("10001", "")
+        comment["body"] = media_body
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, {"total": 1, "comments": [comment]}),
+        ]
+
+        result = client(session).get_comments("ISD-5444")
+
+        self.assertEqual(result["comments"][0]["body"], "")
+        self.assertEqual(result["comments"][0]["body_adf"], media_body)
+
     def test_search_does_not_request_custom_fields(self):
         """Test that search does not request custom fields."""
         session = FakeSession()

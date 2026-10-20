@@ -1053,18 +1053,10 @@ class TestAdfToText(unittest.TestCase):
             "type": "doc",
             "version": 1,
             "content": [
-                {"type": "paragraph", "content": [{"type": "text", "text": "a", "marks": [{"type": "code"}]}, {"type": "text", "text": "b"}]},
-            ],
-        }
-        # (content is the single space; see doc above)
-        doc2 = {
-            "type": "doc",
-            "version": 1,
-            "content": [
                 {"type": "paragraph", "content": [{"type": "text", "text": " ", "marks": [{"type": "code"}]}]},
             ],
         }
-        text = adf_to_text(doc2)
+        text = adf_to_text(doc)
         self.assertEqual(text, "` `")
         self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], " ")
 
@@ -1143,7 +1135,107 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(href, "https://e.com/a%5Cb")
 
 
+    def test_escapes_indented_setext_underline(self):
+        # Up to three leading spaces still form a setext underline.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "  ==="},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "first\n  \\===")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "first")
+
+    def test_preserves_link_titles(self):
+        # The write converter keeps link titles; the read side must too, or an
+        # update strips titles from links this server itself created.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "a",
+                            "marks": [{"type": "link", "attrs": {"href": "https://x.y", "title": 'The "T" \\ doc'}}],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, '[a](https://x.y "The \\"T\\" \\\\ doc")')
+        reparsed = markdown_to_adf(text)
+        marks = reparsed["content"][0]["content"][0]["marks"]
+        self.assertEqual(marks, [{"type": "link", "attrs": {"href": "https://x.y", "title": 'The "T" \\ doc'}}])
+
+    def test_pads_ragged_table_rows_to_rectangular(self):
+        # A merged header (colspan 2) renders one cell where the body has two;
+        # markdown sizes the table by the header, so the second body cell
+        # would be dropped. Pad every row to the widest row.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "attrs": {"colspan": 2},
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c1"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c2"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |  |\n| --- | --- |\n| c1 | c2 |")
+        reparsed = markdown_to_adf(text)
+        rows = reparsed["content"][0]["content"]
+        body_cells = rows[1]["content"]
+        self.assertEqual([c["content"][0]["content"][0]["text"] for c in body_cells], ["c1", "c2"])
+
+
 class TestMarkdownToAdf(unittest.TestCase):
+    # Inline code keeps only marks ADF allows alongside code (link); anything
+    # else (strong, em, strike) would make the document invalid for Jira.
+    def test_code_inline_drops_incompatible_inherited_marks(self):
+        adf = markdown_to_adf("**`value`**")
+        text_node = adf["content"][0]["content"][0]
+        self.assertEqual(text_node["marks"], [{"type": "code"}])
+        self.assertEqual(text_node["text"], "value")
+
+    def test_code_inline_keeps_link_mark(self):
+        adf = markdown_to_adf("[`x`](https://y.z)")
+        text_node = adf["content"][0]["content"][0]
+        self.assertEqual(
+            text_node["marks"],
+            [{"type": "link", "attrs": {"href": "https://y.z"}}, {"type": "code"}],
+        )
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
     # and blank lines separating markdown blocks become separate ADF blocks.

@@ -125,12 +125,18 @@ class JiraClient:
         self.policy.ensure_response_issue_allowed(payload)
         issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
-        
+
         # Add custom fields view
         custom_fields = self._custom_fields_view(payload.get("fields", {}))
         if custom_fields:
             issue["custom_fields"] = custom_fields
-        
+
+        # Media cannot be represented in markdown; expose the original ADF so
+        # an update can preserve embedded attachments instead of deleting them.
+        description = payload.get("fields", {}).get("description")
+        if _contains_media(description):
+            issue["description_adf"] = description
+
         return issue
 
     def get_comments(
@@ -494,15 +500,35 @@ def compact_issue(issue: dict[str, Any], full_description: bool = False) -> dict
 
 
 def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
-    return {
+    body = comment.get("body")
+    compacted = {
         "id": comment.get("id"),
         "author": _display_user(comment.get("author")),
-        "body": adf_to_text(comment.get("body")),
+        "body": adf_to_text(body),
         "created": comment.get("created"),
         "updated": comment.get("updated"),
         "visibility": _comment_visibility(comment.get("visibility")),
         "public": comment.get("jsdPublic", True),
     }
+    # Media cannot be represented in markdown; expose the original ADF so an
+    # update can preserve embedded attachments instead of deleting them.
+    if _contains_media(body):
+        compacted["body_adf"] = body
+    return compacted
+
+
+_MEDIA_TYPES = frozenset({"media", "mediaSingle", "mediaInline", "mediaGroup"})
+
+
+def _contains_media(value: Any) -> bool:
+    """True when the ADF tree embeds uploaded media that markdown cannot keep."""
+    if isinstance(value, dict):
+        if value.get("type") in _MEDIA_TYPES:
+            return True
+        return any(_contains_media(child) for child in value.get("content", []))
+    if isinstance(value, list):
+        return any(_contains_media(item) for item in value)
+    return False
 
 
 def _display_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
