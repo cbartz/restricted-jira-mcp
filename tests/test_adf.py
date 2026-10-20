@@ -673,6 +673,47 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(markdown_to_adf(adf_to_text(doc)), doc)
 
 
+    def test_code_block_content_stays_literal(self):
+        # Fenced markdown keeps code literal: punctuation inside a code block
+        # must not be backslash-escaped, or a read→update round trip corrupts it.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "values[0] < 3 && f(*args)"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "```\nvalues[0] < 3 && f(*args)\n```")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_code_block_round_trips_trailing_newline(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "x = 1\n"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "```\nx = 1\n```")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_code_block_with_embedded_backticks_round_trips(self):
+        # A fence must outlive the longest backtick run in the content, or the
+        # content itself would close it early.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "has ```` run and `tick`"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "`````\nhas ```` run and `tick`\n`````")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,

@@ -66,10 +66,19 @@ def _render_block(node: dict[str, Any]) -> str:
     elif node_type == "codeBlock":
         content = node.get("content", [])
         language = node.get("attrs", {}).get("language")
-        text = _render_inline(content).rstrip()
+        # Code is fenced, so its text stays literal: concatenate the text
+        # nodes without escaping or trimming, and let the fence outlive any
+        # embedded backticks.
+        text = "".join(
+            child.get("text", "") for child in content if isinstance(child, dict) and child.get("type") == "text"
+        )
+        longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(longest_run + 1, 3)
+        if text and not text.endswith("\n"):
+            text += "\n"
         if language:
-            return f"```{language}\n{text}\n```"
-        return f"```\n{text}\n```"
+            return f"{fence}{language}\n{text}{fence}"
+        return f"{fence}\n{text}{fence}"
     elif node_type == "blockquote":
         return _render_blockquote(node)
     elif node_type == "table":
