@@ -160,7 +160,10 @@ def _render_list_item(item: dict[str, Any], prefix: str) -> str:
                 lines.append("")
                 lines.extend(indent + line for line in child_lines)
             else:
-                lines.extend(child_lines)
+                # The first block's own continuation lines (after a hard
+                # break) must stay inside the item too.
+                lines.extend(child_lines[:1])
+                lines.extend(indent + line for line in child_lines[1:])
     if not lines:
         return ""
     lines[0] = prefix + lines[0]
@@ -291,73 +294,83 @@ def _render_code_span(text: str) -> str:
 def _render_inline(nodes: list[Any], at_line_start: bool = False) -> str:
     """Render a list of inline nodes with proper formatting.
 
-    Adjacent text nodes sharing identical marks render as one run, with
-    boundary whitespace moved outside the delimiters (markdown emphasis
-    cannot bind across a boundary space). at_line_start marks whether the
+    Adjacent text nodes sharing identical marks render as one run. Boundary
+    whitespace moves outside the delimiters (markdown emphasis cannot bind
+    across a boundary space), and runs are rendered with their neighbours in
+    view because CommonMark's flanking rules also fail when a delimiter sits
+    against punctuation on the wrong side. at_line_start marks whether the
     first node sits at the start of a markdown line; a hard break makes every
     following node line-initial too.
     """
-    parts: list[str] = []
-    line_start = at_line_start
-    pending_marks: list[dict[str, Any]] = []
-    pending_text = ""
-    pending_open = False
-
-    def flush() -> None:
-        nonlocal pending_marks, pending_text, pending_open, line_start
-        if not pending_open:
-            return
-        if pending_text:
-            rendered = _render_marked_run(pending_marks, pending_text, line_start)
-            parts.append(rendered)
-            line_start = rendered.endswith("\n")
-        pending_marks = []
-        pending_text = ""
-        pending_open = False
-
+    seq: list[Any] = []  # "break" | ("run", marks, text) | ("chunk", rendered)
     for node in nodes:
         if not isinstance(node, dict):
             continue
         node_type = node.get("type")
         if node_type == "hardBreak":
-            flush()
-            parts.append("\n")
-            line_start = True
+            seq.append("break")
         elif node_type == "text":
             marks = node.get("marks", [])
-            if not pending_open or marks != pending_marks:
-                flush()
-                pending_marks = marks
-                pending_open = True
-            pending_text += node.get("text", "")
-        else:
-            flush()
-            if node_type == "mention":
-                text = node.get("attrs", {}).get("text", "") or _render_inline(node.get("content", []))
-                rendered = _render_marked_run([], text, line_start) if text else ""
-            elif node_type == "status":
-                text = (node.get("attrs") or {}).get("text", "")
-                rendered = _render_marked_run([], text, line_start) if text else ""
-            elif node_type == "emoji":
-                attrs = node.get("attrs") or {}
-                text = attrs.get("text") or attrs.get("shortName") or ""
-                rendered = _render_marked_run([], text, line_start) if text else ""
-            elif node_type == "date":
-                rendered = _render_date_node(node.get("attrs") or {}, line_start)
+            text = node.get("text", "")
+            if seq and isinstance(seq[-1], tuple) and seq[-1][0] == "run" and seq[-1][1] == marks:
+                seq[-1] = ("run", marks, seq[-1][2] + text)
             else:
-                rendered = _render_inline(node.get("content", []), line_start)
-                if not rendered:
-                    # Attribute-only leaves like inlineCard carry their value
-                    # in attrs; the URL still deserves a link on write-back.
-                    url = (node.get("attrs") or {}).get("url")
-                    if url:
-                        rendered = _render_marked_run(
-                            [{"type": "link", "attrs": {"href": url}}], url, line_start
-                        )
+                seq.append(("run", marks, text))
+        elif node_type == "mention":
+            text = node.get("attrs", {}).get("text", "") or _render_inline(node.get("content", []))
+            if text:
+                seq.append(("run", [], text))
+        elif node_type == "status":
+            text = (node.get("attrs") or {}).get("text", "")
+            if text:
+                seq.append(("run", [], text))
+        elif node_type == "emoji":
+            attrs = node.get("attrs") or {}
+            text = attrs.get("text") or attrs.get("shortName") or ""
+            if text:
+                seq.append(("run", [], text))
+        elif node_type == "date":
+            text = _date_text(node.get("attrs") or {})
+            if text:
+                seq.append(("run", [], text))
+        else:
+            rendered = _render_inline(node.get("content", []), False)
+            if not rendered:
+                # Attribute-only leaves like inlineCard carry their value in
+                # attrs; the URL still deserves a link on write-back.
+                url = (node.get("attrs") or {}).get("url")
+                if url:
+                    rendered = _render_marked_run([{"type": "link", "attrs": {"href": url}}], url, False)
             if rendered:
-                parts.append(rendered)
-                line_start = rendered.endswith("\n")
-    flush()
+                seq.append(("chunk", rendered))
+
+    parts: list[str] = []
+    line_start = at_line_start
+    for i, item in enumerate(seq):
+        if item == "break":
+            at_empty_line = (not parts and line_start) or (parts and parts[-1].endswith("\n"))
+            # A break on an empty line must carry its backslash, or markdown
+            # reads the position as a paragraph boundary (or loses it).
+            parts.append("\\\n" if at_empty_line else "\n")
+            line_start = True
+            continue
+        kind, *rest = item if isinstance(item, tuple) else (None, None)
+        if kind == "chunk":
+            rendered = rest[0]
+        else:
+            marks, text = rest
+            prev_char = parts[-1][-1] if parts and not parts[-1].endswith("\n") else ""
+            next_item = seq[i + 1] if i + 1 < len(seq) else None
+            if next_item is None or next_item == "break":
+                next_char = "\n"
+            elif next_item[0] == "chunk":
+                next_char = next_item[1][:1]
+            else:
+                next_char = next_item[2][:1]
+            rendered = _render_marked_run(marks, text, line_start, prev_char=prev_char, next_char=next_char)
+        if rendered:
+            parts.append(rendered)
+            line_start = rendered.endswith("\n")
     return "".join(parts)
 
 
@@ -366,13 +379,40 @@ def _render_inline_node(node: dict[str, Any], at_line_start: bool = False) -> st
     return _render_inline([node], at_line_start)
 
 
-def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bool) -> str:
+def _date_text(attrs: dict[str, Any]) -> str:
+    """Render a date node's timestamp as an ISO date; the widget degrades to
+    text because markdown cannot express a date picker."""
+    timestamp = attrs.get("timestamp")
+    try:
+        moment = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(timestamp) if timestamp else ""
+    return moment.strftime("%Y-%m-%d")
+
+
+def _render_marked_run(
+    marks: list[dict[str, Any]],
+    text: str,
+    at_line_start: bool,
+    prev_char: str = "",
+    next_char: str = "",
+) -> str:
     """Render one run of text sharing identical marks.
 
-    Boundary whitespace moves outside the delimiters: `**bold **` is not a
-    closing delimiter in CommonMark, so wrapping ``bold `` directly would
-    turn the mark into literal asterisks on write-back.
+    Boundary whitespace moves outside the delimiters (``**bold **`` is not a
+    closing delimiter). Flanking rules also fail when a delimiter touches
+    punctuation on the outer side of a word boundary: a trailing
+    punctuation character shifts out of the delimiters, and a leading one
+    after a word character forces the mark to be dropped — literal
+    asterisks in the text would be worse than a lost mark.
     """
+
+    def _word(char: str) -> bool:
+        return bool(char) and (char.isalnum() or char == "_")
+
+    def _punct(char: str) -> bool:
+        return bool(char) and not char.isalnum() and not char.isspace()
+
     if not marks:
         return _escape_markdown(text, at_line_start)
     if any(mark.get("type") == "code" for mark in marks):
@@ -390,10 +430,19 @@ def _render_marked_run(marks: list[dict[str, Any]], text: str, at_line_start: bo
     core = core[: trail_match.start()]
     if not core:
         return _escape_markdown(lead + trail, at_line_start)
+    if _punct(core[0]) and _word(prev_char):
+        # Opening delimiter cannot bind; render the run unmarked.
+        return _escape_markdown(text, at_line_start)
+    shifted = ""
+    if _punct(core[-1]) and _word(next_char):
+        shifted = core[-1]
+        core = core[:-1]
+        if not core:
+            return _escape_markdown(text, at_line_start)
     inner = _escape_markdown(core, at_line_start and not lead)
     for mark in reversed(marks):
         inner = _wrap_mark(mark, inner)
-    return lead + inner + trail
+    return lead + inner + shifted + trail
 
 
 def _wrap_mark(mark: dict[str, Any], text: str) -> str:
@@ -441,17 +490,6 @@ def _render_link_destination(href: str) -> str:
         return escaped
     wrapped = escaped.replace("<", "\\<").replace(">", "\\>")
     return f"<{wrapped}>"
-
-
-def _render_date_node(attrs: dict[str, Any], at_line_start: bool) -> str:
-    """Render a date node's timestamp as an ISO date; the widget degrades to
-    text because markdown cannot express a date picker."""
-    timestamp = attrs.get("timestamp")
-    try:
-        moment = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
-    except (TypeError, ValueError, OSError, OverflowError):
-        return _render_marked_run([], str(timestamp or ""), at_line_start) if timestamp else ""
-    return _render_marked_run([], moment.strftime("%Y-%m-%d"), at_line_start)
 
 
 # Parser for the Markdown → ADF write path: CommonMark plus the table and
@@ -528,7 +566,17 @@ def _convert_block(node: SyntaxTreeNode) -> dict | None:
         order = int(start) if start is not None else 1
         return {"type": "orderedList", "attrs": {"order": order}, "content": _convert_blocks(node.children)}
     if node_type == "list_item":
-        return {"type": "listItem", "content": _convert_blocks(node.children)}
+        # ADF list items must start with a paragraph and reject heading
+        # children; normalize a heading to its text so Jira accepts the write.
+        children = []
+        for child in node.children:
+            if child.type == "heading":
+                children.append({"type": "paragraph", "content": _inline_content(child)})
+            else:
+                block = _convert_block(child)
+                if block:
+                    children.append(block)
+        return {"type": "listItem", "content": children}
     if node_type in ("fence", "code_block"):
         return _convert_code_block(node)
     if node_type == "blockquote":
@@ -628,12 +676,15 @@ def _convert_inline_node(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
     if node_type == "image":
         # ADF media needs upload; images degrade to their alt text as a link to
         # src. An empty alt falls back to the URL so the node stays nonempty.
+        # Inside an enclosing link the outer mark wins: two link marks on one
+        # text node are invalid ADF.
         src = node.attrGet("src")
         label = node.content or src or ""
         if not label:
             return []
-        link_mark = {"type": "link", "attrs": {"href": src}}
-        return [_text_node(label, marks + [link_mark])]
+        if any(mark.get("type") == "link" for mark in marks):
+            return [_text_node(label, marks)]
+        return [_text_node(label, marks + [{"type": "link", "attrs": {"href": src}}])]
     if node_type == "link":
         attrs: dict[str, Any] = {"href": node.attrGet("href")}
         title = node.attrGet("title")
@@ -647,7 +698,12 @@ def _convert_inline_node(node: SyntaxTreeNode, marks: list[dict]) -> list[dict]:
                 nodes = [_text_node(href, marks + [{"type": "link", "attrs": attrs}])]
         return nodes
     if node_type in _MARK_TYPES:
-        return _convert_inline_nodes(node, marks + [{"type": _MARK_TYPES[node_type]}])
+        mark_type = _MARK_TYPES[node_type]
+        # ADF allows only one mark of each type on a text node; nested
+        # identical emphasis (**outer __inner__**) inherits instead of stacking.
+        if any(mark.get("type") == mark_type for mark in marks):
+            return _convert_inline_nodes(node, marks)
+        return _convert_inline_nodes(node, marks + [{"type": mark_type}])
     # Unknown inline node: recurse into children, or keep its text so nothing
     # is silently dropped.
     if node.children:

@@ -1220,6 +1220,159 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual([c["content"][0]["content"][0]["text"] for c in body_cells], ["c1", "c2"])
 
 
+    def test_list_item_first_block_continuation_lines_stay_indented(self):
+        # A hard break inside the item's FIRST paragraph must not push its
+        # continuation lines out of the list item.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [
+                                        {"type": "text", "text": "first"},
+                                        {"type": "hardBreak"},
+                                        {"type": "text", "text": "second"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- first\n  second")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(len(item["content"]), 1)
+        self.assertEqual(item["content"][0]["type"], "paragraph")
+        self.assertEqual(
+            [n["type"] for n in item["content"][0]["content"]],
+            ["text", "hardBreak", "text"],
+        )
+
+    def test_consecutive_hard_breaks_round_trip(self):
+        # "\n\n" from two breaks would re-parse as a paragraph boundary; a
+        # break on an empty line needs its backslash.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "hardBreak"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # The first break is a plain newline (our softbreak→hardBreak rule
+        # keeps it), the second sits on an empty line and carries its
+        # backslash so it is not read as a paragraph boundary.
+        self.assertEqual(text, "a\n\\\nb")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_leading_hard_break_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "\\\nb")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_marked_trailing_punctuation_shifts_out_of_delimiters(self):
+        # "**Label:**value" cannot close the emphasis (punctuation before a
+        # word character); shifting the colon out keeps text and mark.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Label:", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "value"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**Label**:value")
+        reparsed = markdown_to_adf(text)
+        paragraph = reparsed["content"][0]["content"]
+        self.assertEqual(paragraph[0].get("marks"), [{"type": "strong"}])
+        self.assertEqual(paragraph[0]["text"], "Label")
+        self.assertEqual(paragraph[1]["text"], ":value")
+
+    def test_marked_leading_punctuation_after_word_drops_mark(self):
+        # "Done**!**" cannot open the emphasis either; the honest fallback is
+        # plain text — never literal asterisks.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Done"},
+                        {"type": "text", "text": "!", "marks": [{"type": "strong"}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "Done!")
+        reparsed = markdown_to_adf(text)
+        self.assertEqual(reparsed["content"][0]["content"][0].get("marks", []), [])
+        self.assertEqual(reparsed["content"][0]["content"][0]["text"], "Done!")
+
+    def test_converts_list_item_headings_to_paragraphs(self):
+        # ADF list items must start with a paragraph and reject heading
+        # children; "- # Heading" would hand Jira an invalid document.
+        adf = markdown_to_adf("- # Heading\n- plain")
+        first_item = adf["content"][0]["content"][0]
+        self.assertEqual(first_item["content"][0]["type"], "paragraph")
+        self.assertEqual(first_item["content"][0]["content"][0]["text"], "Heading")
+        second_item = adf["content"][0]["content"][1]
+        self.assertEqual(second_item["content"][0]["type"], "paragraph")
+
+    def test_linked_image_keeps_single_link_mark(self):
+        adf = markdown_to_adf("[![badge](https://img/x.png)](https://target/)")
+        text_node = adf["content"][0]["content"][0]
+        link_marks = [m for m in text_node.get("marks", []) if m["type"] == "link"]
+        self.assertEqual(len(link_marks), 1)
+        self.assertEqual(link_marks[0]["attrs"]["href"], "https://target/")
+        self.assertEqual(text_node["text"], "badge")
+
+    def test_nested_same_emphasis_mark_is_not_duplicated(self):
+        adf = markdown_to_adf("**outer __inner__**")
+        for node in adf["content"][0]["content"]:
+            marks = node.get("marks", [])
+            strong_count = sum(1 for m in marks if m["type"] == "strong")
+            self.assertLessEqual(strong_count, 1)
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Inline code keeps only marks ADF allows alongside code (link); anything
     # else (strong, em, strike) would make the document invalid for Jira.
