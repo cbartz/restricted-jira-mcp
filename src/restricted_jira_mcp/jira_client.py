@@ -134,7 +134,7 @@ class JiraClient:
         # Media cannot be represented in markdown; expose the original ADF so
         # an update can preserve embedded attachments instead of deleting them.
         description = payload.get("fields", {}).get("description")
-        if _contains_media(description):
+        if _needs_raw_adf(description):
             issue["description_adf"] = description
 
         return issue
@@ -514,7 +514,7 @@ def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
     }
     # Media cannot be represented in markdown; expose the original ADF so an
     # update can preserve embedded attachments instead of deleting them.
-    if _contains_media(body):
+    if _needs_raw_adf(body):
         compacted["body_adf"] = body
     return compacted
 
@@ -522,14 +522,26 @@ def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
 _MEDIA_TYPES = frozenset({"media", "mediaSingle", "mediaInline", "mediaGroup"})
 
 
-def _contains_media(value: Any) -> bool:
-    """True when the ADF tree embeds uploaded media that markdown cannot keep."""
+def _needs_raw_adf(value: Any) -> bool:
+    """True when the ADF tree holds content a markdown round trip cannot keep:
+    uploaded media, a paragraph ending in a hard break (the trailing newline
+    is discarded on write-back), or a code block inside a table cell (cells
+    flatten to inline text, losing the code and its language)."""
     if isinstance(value, dict):
-        if value.get("type") in _MEDIA_TYPES:
+        node_type = value.get("type")
+        if node_type in _MEDIA_TYPES:
             return True
-        return any(_contains_media(child) for child in value.get("content", []))
+        content = value.get("content", [])
+        if node_type == "paragraph" and content and content[-1].get("type") == "hardBreak":
+            return True
+        if node_type == "table":
+            for row in content:
+                for cell in row.get("content", []):
+                    if any(child.get("type") == "codeBlock" for child in cell.get("content", [])):
+                        return True
+        return any(_needs_raw_adf(child) for child in content)
     if isinstance(value, list):
-        return any(_contains_media(item) for item in value)
+        return any(_needs_raw_adf(item) for item in value)
     return False
 
 

@@ -152,7 +152,7 @@ For HTTP deployment, see the "Running over HTTP" section above. With HTTP, agent
 - `jira_get_issue(issue_key)`
   - Returns full description text (no truncation)
   - Includes allowlisted custom fields under "custom_fields": ADF-valued fields carry both `text` (readable, full length) and `adf` (the original object — pass it back unchanged when updating, since those fields reject bare strings); non-ADF values JSON-dump; scalars pass through
-  - When a description or comment body embeds uploaded media (which markdown cannot represent), the response also carries the original object as `description_adf` / `body_adf` — include it unchanged in the update's fields/body to avoid deleting the attachments
+  - When a description or comment body holds content a markdown round trip cannot keep — uploaded media, a paragraph ending in a line break, or a code block inside a table cell — the response also carries the original object as `description_adf` / `body_adf`; include it unchanged in the update's fields/body to avoid losing that content
 - `jira_get_comments(issue_key, max_results=25, start_at=0)`
   - Returns full comment text (no truncation)
 - `jira_search(jql, max_results=25)`

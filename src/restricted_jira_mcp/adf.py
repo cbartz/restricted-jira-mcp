@@ -131,29 +131,39 @@ def _render_blockquote(node: dict[str, Any]) -> str:
 def _render_list_item(item: dict[str, Any], prefix: str) -> str:
     """Render a list item: marker on the first line, continuation lines
     indented to the marker's width so nested content stays nested on re-parse."""
-    content = item.get("content", [])
+    content = [child for child in item.get("content", []) if isinstance(child, dict)]
     if not content:
-        return ""
+        return prefix.rstrip()
+    rendered = []
+    for child in content:
+        child_type = child.get("type")
+        if child_type in ("bulletList", "orderedList"):
+            rendered.append((child_type, _render_blocks([child])))
+        else:
+            text = _render_block(child) if _is_block_node(child) else _render_inline_node(child)
+            rendered.append((child_type, text))
+    first_text = next((i for i, (_, text) in enumerate(rendered) if text), None)
+    if first_text is None:
+        # An empty item keeps its marker so it does not vanish entirely.
+        return prefix.rstrip()
     indent = " " * len(prefix)
     lines: list[str] = []
-    for child in content:
-        if not isinstance(child, dict):
+    if first_text > 0 and rendered[first_text][0] in ("bulletList", "orderedList"):
+        # A leading empty paragraph becomes a marker-only line; a blank line
+        # here would split the list instead of nesting it.
+        lines.append("")
+    for child_type, text in rendered[first_text:]:
+        if not text:
             continue
-        if child.get("type") in ("bulletList", "orderedList"):
-            if lines:
+        if child_type in ("bulletList", "orderedList"):
+            if lines and lines[-1] != "":
                 # A blank line makes the item loose, so a nested list stays a
                 # separate block instead of a lazy continuation.
                 lines.append("")
-            nested = _render_blocks([child])
-            for line in nested.split("\n"):
-                # Blank lines stay blank: indenting them adds nothing, and
-                # dropping them would glue a nested item to its predecessor.
+            for line in text.split("\n"):
                 lines.append(indent + line if line.strip() else "")
         else:
-            child_text = _render_block(child) if _is_block_node(child) else _render_inline_node(child)
-            if not child_text:
-                continue
-            child_lines = child_text.split("\n")
+            child_lines = text.split("\n")
             if lines:
                 # Sibling blocks inside one item need a blank separator, or a
                 # write-back reads them as one lazy-continued paragraph.
@@ -164,8 +174,6 @@ def _render_list_item(item: dict[str, Any], prefix: str) -> str:
                 # break) must stay inside the item too.
                 lines.extend(child_lines[:1])
                 lines.extend(indent + line for line in child_lines[1:])
-    if not lines:
-        return ""
     lines[0] = prefix + lines[0]
     return "\n".join(lines)
 
@@ -433,12 +441,15 @@ def _render_marked_run(
             escaped_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("&", "\\&")
             title_part = f' "{escaped_title}"'
         if any(mark.get("type") == "code" for mark in marks):
-            # Code spans keep their boundary whitespace, so use the full text.
+            # Code spans keep their boundary whitespace inside themselves, so
+            # the exterior lead/trail must not be added again.
             inner = _render_code_span(text)
             emphasis = [mark for mark in marks if mark.get("type") not in ("link", "code")]
-        else:
-            emphasis = [mark for mark in marks if mark.get("type") != "link"]
-            inner = _escape_markdown(core, at_line_start and not lead)
+            for mark in reversed(emphasis):
+                inner = _wrap_mark(mark, inner)
+            return f"[{inner}]({destination}{title_part})"
+        emphasis = [mark for mark in marks if mark.get("type") != "link"]
+        inner = _escape_markdown(core, at_line_start and not lead)
         for mark in reversed(emphasis):
             inner = _wrap_mark(mark, inner)
         return lead + f"[{inner}]({destination}{title_part})" + trail
@@ -589,13 +600,31 @@ def _convert_block(node: SyntaxTreeNode) -> dict | None:
         return {"type": "orderedList", "attrs": {"order": order}, "content": _convert_blocks(node.children)}
     if node_type == "list_item":
         # ADF list items must start with a paragraph, need at least one child,
-        # and reject heading/rule children; normalize so Jira accepts the write.
+        # and reject heading/rule/blockquote/table children; normalize so Jira
+        # accepts the write without losing text.
         children = []
         for child in node.children:
             if child.type == "heading":
                 children.append({"type": "paragraph", "content": _inline_content(child)})
             elif child.type == "hr":
                 children.append({"type": "paragraph", "content": [_text_node("---", [])]})
+            elif child.type == "blockquote":
+                for sub in child.children:
+                    if sub.type == "heading":
+                        children.append({"type": "paragraph", "content": _inline_content(sub)})
+                    elif sub.type == "hr":
+                        children.append({"type": "paragraph", "content": [_text_node("---", [])]})
+                    else:
+                        block = _convert_block(sub)
+                        if block:
+                            children.append(block)
+            elif child.type == "table":
+                cells = [
+                    _descendant_text(cell).strip()
+                    for row in child.children
+                    for cell in row.children
+                ]
+                children.append({"type": "paragraph", "content": [_text_node(" | ".join(cells), [])]})
             else:
                 block = _convert_block(child)
                 if block:

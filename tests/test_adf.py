@@ -1430,11 +1430,122 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(third["text"], "Label:")
 
 
+    def test_renders_item_with_leading_empty_paragraph_and_nested_list(self):
+        # An item whose first paragraph is empty keeps its marker as a
+        # placeholder line; a blank line here would split the list.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": []},
+                                {
+                                    "type": "bulletList",
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- \n  - a\n  - b")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_empty_list_item_with_marker(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": []}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "-")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(item["content"], [{"type": "paragraph", "content": []}])
+
+    def test_drops_leading_empty_paragraph_before_paragraph_sibling(self):
+        # An empty leading paragraph before a paragraph sibling cannot round
+        # trip through markdown; dropping it keeps the item and its text.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": []},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- second")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(len(item["content"]), 1)
+        self.assertEqual(item["content"][0]["content"][0]["text"], "second")
+
+
+
+    def test_linked_code_span_keeps_boundary_spaces_without_duplication(self):
+        # The code span already carries the run's boundary whitespace inside
+        # itself; adding lead/trail again would duplicate it.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": " x ", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}, {"type": "code"}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # CommonMark strips one span-boundary space per side, so the renderer
+        # doubles them to keep the code's own spaces.
+        self.assertEqual(text, "a[`  x  `](https://x.y)b")
+        reparsed = markdown_to_adf(text)
+        node = reparsed["content"][0]["content"][1]
+        self.assertEqual(node["text"], " x ")
+        self.assertEqual(
+            node["marks"],
+            [{"type": "link", "attrs": {"href": "https://x.y"}}, {"type": "code"}],
+        )
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # ADF list items must start with a paragraph, need a child even when the
-    # markdown item is empty, and reject rule children.
+    # markdown item is empty, and reject heading/rule/blockquote/table
+    # children; each normalizes to a form Jira accepts without losing text.
     def test_normalizes_list_item_children_for_adf(self):
-        adf = markdown_to_adf("-\n- - nested\n- item\n\n  ---")
+        adf = markdown_to_adf("-\n- - nested\n- item\n\n  ---\n- quoted\n  > inner\n- tbl\n  | a |\n  | --- |\n  | 1 |")
         items = adf["content"][0]["content"]
         # Empty item gains an empty paragraph.
         self.assertEqual(items[0]["content"], [{"type": "paragraph", "content": []}])
@@ -1444,6 +1555,15 @@ class TestMarkdownToAdf(unittest.TestCase):
         # A rule inside an item degrades to its text.
         third = items[2]
         self.assertEqual(third["content"][-1], {"type": "paragraph", "content": [{"type": "text", "text": "---"}]})
+        # A blockquote inside an item lifts to its own paragraphs.
+        fourth = items[3]
+        self.assertEqual(fourth["content"][1]["type"], "paragraph")
+        self.assertEqual(fourth["content"][1]["content"][0]["text"], "inner")
+        # A table inside an item degrades to one paragraph of its cell text.
+        fifth = items[4]
+        self.assertEqual(fifth["content"][1]["type"], "paragraph")
+        self.assertEqual(fifth["content"][1]["content"][0]["text"], "a | 1")
+
     # Inline code keeps only marks ADF allows alongside code (link); anything
     # else (strong, em, strike) would make the document invalid for Jira.
     def test_code_inline_drops_incompatible_inherited_marks(self):

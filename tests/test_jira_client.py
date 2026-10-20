@@ -605,6 +605,60 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertNotIn("description_adf", issue)
 
+    def test_get_issue_exposes_raw_adf_for_trailing_break_descriptions(self):
+        # A paragraph ending in a hard break renders a trailing newline that
+        # CommonMark discards; the round trip needs the original ADF.
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["description"] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "line"}, {"type": "hardBreak"}],
+                },
+            ],
+        }
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertIn("description_adf", issue)
+
+    def test_get_issue_exposes_raw_adf_for_cell_code_blocks(self):
+        # A code block inside a table cell flattens to inline text; the code
+        # and its language would not survive a write-back.
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["description"] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "codeBlock", "attrs": {"language": "python"}, "content": [{"type": "text", "text": "x\ny"}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertIn("description_adf", issue)
+
     def test_get_comments_exposes_raw_adf_for_media_bearing_bodies(self):
         session = FakeSession()
         media_body = {
@@ -623,6 +677,16 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertEqual(result["comments"][0]["body"], "")
         self.assertEqual(result["comments"][0]["body_adf"], media_body)
+
+    def test_create_issue_rejects_empty_dict_description(self):
+        # An explicitly supplied description={} must hit as_adf validation, not
+        # silently create the issue without a description.
+        session = FakeSession()
+
+        with self.assertRaises(ValueError):
+            client(session).create_issue("ISD", "Story", "S", description={})
+
+        self.assertEqual(session.calls, [])
 
     def test_search_does_not_request_custom_fields(self):
         """Test that search does not request custom fields."""
