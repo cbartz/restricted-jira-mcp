@@ -8,49 +8,60 @@ from typing import Any
 def _split_order_by(jql: str) -> tuple[str, str | None]:
     """
     Split JQL at the last top-level ORDER BY clause (outside quotes).
-    
+
+    Backslash escapes are tracked so a quote inside a string literal
+    (``text ~ "a\\"b"``) cannot desynchronise the quote state, and the clause
+    itself may contain quoted field names (``ORDER BY "Order By Date"``).
+
     Args:
         jql: The JQL string to split
-        
+
     Returns:
         tuple: (body, order_clause) where order_clause is None if no ORDER BY found
     """
     if not jql:
         return "", None
-    
+
     jql = jql.strip()
     if not jql:
         return "", None
-    
-    # Track quote states
+
+    positions = []
     in_single_quote = False
     in_double_quote = False
-    
-    # Look for the last occurrence of ORDER BY outside quotes
-    order_by_pos = -1
-    
-    for i in range(len(jql) - 7):  # leave room for the 8-character "order by" token
+    escaped = False
+    i = 0
+    while i < len(jql):
         char = jql[i]
-        
-        # Track quotes
-        if char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-        elif char == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-        
-        # Check for ORDER BY pattern when not in quotes
-        match = _ORDER_BY_RE.match(jql, i) if not in_single_quote and not in_double_quote else None
-        if (match and
-            (i == 0 or jql[i-1].isspace()) and
-            (match.end() == len(jql) or jql[match.end()].isspace() or jql[match.end()] in "(,)") and
-            # Check that this is the last ORDER BY in the string
-            not _ORDER_BY_RE.search(jql[match.end():])):
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_double_quote:
+            if char == '"':
+                in_double_quote = False
+        elif in_single_quote:
+            if char == "'":
+                in_single_quote = False
+        elif char == '"':
+            in_double_quote = True
+        elif char == "'":
+            in_single_quote = True
+        else:
+            match = _ORDER_BY_RE.match(jql, i)
+            if (
+                match
+                and (i == 0 or jql[i - 1].isspace())
+                and (match.end() == len(jql) or jql[match.end()].isspace())
+            ):
+                positions.append(i)
+                i = match.end() - 1
+        i += 1
 
-            order_by_pos = i
-    
-    if order_by_pos == -1:
+    if not positions:
         return jql, None
-    
+
+    order_by_pos = positions[-1]
     body = jql[:order_by_pos].rstrip()
     order_clause = jql[order_by_pos:]
     

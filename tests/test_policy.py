@@ -99,6 +99,18 @@ class JiraPolicyTests(unittest.TestCase):
                 "project in (ABC, ISD) AND (status = Done) ORDER  BY created",
             )
 
+        with self.subTest("escaped quote inside string, real ORDER BY after"):
+            self.assertEqual(
+                policy.wrap_jql('text ~ "a\\"b" ORDER BY created'),
+                'project in (ABC, ISD) AND (text ~ "a\\"b") ORDER BY created',
+            )
+
+        with self.subTest("quoted field name in ORDER BY clause"):
+            self.assertEqual(
+                policy.wrap_jql('status = Done ORDER BY "Order By Date"'),
+                'project in (ABC, ISD) AND (status = Done) ORDER BY "Order By Date"',
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
