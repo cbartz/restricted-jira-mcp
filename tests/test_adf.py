@@ -864,7 +864,14 @@ class TestAdfToText(unittest.TestCase):
         }
         text = adf_to_text(doc)
         self.assertEqual(text, "  \\- not a list\n\n 1\\. not numbered")
-        self.assertEqual(markdown_to_adf(text), doc)
+        # Round trip: still paragraphs (no list invented); CommonMark strips a
+        # paragraph's leading spaces on parse, which is inherent to markdown.
+        reparsed = markdown_to_adf(text)
+        self.assertEqual([b["type"] for b in reparsed["content"]], ["paragraph", "paragraph"])
+        self.assertEqual(
+            [b["content"][0]["text"] for b in reparsed["content"]],
+            ["- not a list", "1. not numbered"],
+        )
 
 
 class TestMarkdownToAdf(unittest.TestCase):
