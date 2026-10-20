@@ -110,97 +110,59 @@ def _render_blockquote(node: dict[str, Any]) -> str:
 
 
 def _render_list_item(item: dict[str, Any], prefix: str) -> str:
-    """Render a list item with proper indentation."""
+    """Render a list item: marker on the first line, continuation lines
+    indented to the marker's width so nested content stays nested on re-parse."""
     content = item.get("content", [])
     if not content:
         return ""
-    
-    # Check if this is a nested list
-    has_nested_list = False
+    indent = " " * len(prefix)
+    lines: list[str] = []
     for child in content:
-        if isinstance(child, dict) and child.get("type") in ("bulletList", "orderedList"):
-            has_nested_list = True
-            break
-    
-    if has_nested_list:
-        # For nested lists, render each block separately with proper indentation
-        lines = []
-        for child in content:
-            if isinstance(child, dict):
-                if child.get("type") in ("bulletList", "orderedList"):
-                    # Render nested list with indentation
-                    nested_text = _render_blocks([child])
-                    nested_lines = nested_text.split("\n")
-                    for line in nested_lines:
-                        if line.strip():  # Skip empty lines
-                            lines.append(f"  {line}")
-                        else:
-                            lines.append(line)
-                else:
-                    # Render other content with indentation
-                    child_text = _render_block(child)
-                    if child_text:
-                        lines.append(f"  {child_text}")
-        # Add the prefix to the first line
-        if lines:
-            lines[0] = f"{prefix}{lines[0].lstrip()}"
-        return "\n".join(lines)
-    else:
-        # For simple list items, render content as inline
-        text = _render_inline(content)
-        return f"{prefix}{text}"
+        if not isinstance(child, dict):
+            continue
+        if child.get("type") in ("bulletList", "orderedList"):
+            nested = _render_blocks([child])
+            for line in nested.split("\n"):
+                if line.strip():
+                    lines.append(indent + line)
+        else:
+            child_text = _render_block(child) if _is_block_node(child) else _render_inline_node(child)
+            if not child_text:
+                continue
+            child_lines = child_text.split("\n")
+            if lines:
+                lines.extend(indent + line for line in child_lines)
+            else:
+                lines.extend(child_lines)
+    if not lines:
+        return ""
+    lines[0] = prefix + lines[0]
+    return "\n".join(lines)
 
 
 def _render_table(node: dict[str, Any]) -> str:
-    """Render a table node."""
-    content = node.get("content", [])
-    if not content:
-        return ""
-    
-    # Find header and body rows
-    header_row = None
-    body_rows = []
-    
-    for row in content:
-        if isinstance(row, dict) and row.get("type") == "tableRow":
-            # Check if this row contains headers
-            has_header = any(cell.get("type") == "tableHeader" for cell in row.get("content", []))
-            if has_header:
-                header_row = row
-            else:
-                body_rows.append(row)
-    
-    if not header_row:
-        return ""
-    
-    # Render header row
-    header_cells = header_row.get("content", [])
-    header_texts = []
-    for cell in header_cells:
-        if isinstance(cell, dict):
-            header_texts.append(_render_cell(cell))
+    """Render a table keeping every row in document order.
 
-    # Render separator row
-    separator = "| " + " | ".join(["---"] * len(header_texts)) + " |"
-
-    # Render body rows
-    body_texts = []
-    for row in body_rows:
-        cells = row.get("content", [])
-        row_texts = []
-        for cell in cells:
-            if isinstance(cell, dict):
-                row_texts.append(_render_cell(cell))
-        if row_texts:
-            body_texts.append("| " + " | ".join(row_texts) + " |")
-    
-    # Combine all parts
-    table_parts = [
-        "| " + " | ".join(header_texts) + " |",
-        separator,
-    ] + body_texts
-    
-    return "\n".join(table_parts)
+    Markdown pipe tables require a header, so the first row serves as it
+    (whether ADF marks it tableHeader or tableCell); any further header rows
+    render as body rows. This preserves all cell text across a read→update
+    round trip.
+    """
+    rows = [
+        row
+        for row in node.get("content", [])
+        if isinstance(row, dict) and row.get("type") == "tableRow"
+    ]
+    if not rows:
+        return ""
+    rendered = []
+    for row in rows:
+        cells = [cell for cell in row.get("content", []) if isinstance(cell, dict)]
+        texts = [_render_cell(cell) for cell in cells]
+        rendered.append("| " + " | ".join(texts) + " |")
+    first_row_cells = [cell for cell in rows[0].get("content", []) if isinstance(cell, dict)]
+    separator = "| " + " | ".join(["---"] * len(first_row_cells)) + " |"
+    return "\n".join([rendered[0], separator] + rendered[1:])
 
 
 def _render_cell(cell: dict[str, Any]) -> str:

@@ -128,6 +128,142 @@ class TestAdfToText(unittest.TestCase):
         expected = "> quoted text"
         self.assertEqual(result, expected)
 
+    def test_renders_list_item_with_multiple_paragraphs(self):
+        # Each paragraph in a list item becomes its own indented line, so a
+        # read→update round trip keeps them as separate paragraphs.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "- first\n  second")
+
+    def test_renders_code_block_inside_list_item(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "item with code"}]},
+                                {"type": "codeBlock", "content": [{"type": "text", "text": "x = 1"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "- item with code\n  ```\n  x = 1\n  ```")
+
+    def test_renders_nested_list_under_wide_ordered_marker(self):
+        # Continuation and nested lines indent by the marker's width, so a
+        # "10. " item nests its children deeper than a "1. " item would.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "orderedList",
+                    "attrs": {"order": 10},
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {
+                                    "type": "bulletList",
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "10. first\n    - nested")
+
+    def test_renders_headerless_table_with_all_rows(self):
+        # A table without a header row keeps every row: the first row serves
+        # as the markdown header, because pipe tables require one.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "d"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "| a | b |\n| --- | --- |\n| c | d |")
+
+    def test_renders_table_with_multiple_header_rows(self):
+        # Rows marked as headers beyond the first are still rendered, as body
+        # rows, so no cell text is dropped.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "r1"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "r2"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "| r1 |\n| --- |\n| r2 |")
+
     def test_renders_table(self):
         doc = {
             "type": "doc",
@@ -415,7 +551,9 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        expected = "- top level\n  1. nested 1\n  2. nested 2\n    - deep nested"
+        # Continuation and nested lines indent by their marker's width: the
+        # outer "- " adds two spaces, the inner "2. " adds three.
+        expected = "- top level\n  1. nested 1\n  2. nested 2\n     - deep nested"
         self.assertEqual(result, expected)
 
 
