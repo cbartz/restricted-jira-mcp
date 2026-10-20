@@ -806,6 +806,67 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(markdown_to_adf(text), doc)
 
 
+    def test_flattens_cell_line_breaks_to_spaces(self):
+        # Pipe-table rows cannot contain newlines, so a hard break inside a
+        # cell flattens to a space — the row itself must stay intact.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [
+                                                {"type": "text", "text": "a"},
+                                                {"type": "hardBreak"},
+                                                {"type": "text", "text": "b"},
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |\n| --- |\n| a b |")
+        reparsed = markdown_to_adf(text)
+        cell = reparsed["content"][0]["content"][1]["content"][0]
+        self.assertEqual(cell["type"], "tableCell")
+        self.assertEqual(cell["content"][0]["content"][0]["text"], "a b")
+
+    def test_escapes_indented_list_markers(self):
+        # CommonMark recognizes list markers after up to three leading spaces,
+        # so indentation alone does not make a "- " literal.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "  - not a list"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": " 1. not numbered"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "  \\- not a list\n\n 1\\. not numbered")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,

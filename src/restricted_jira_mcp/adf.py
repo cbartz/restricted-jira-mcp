@@ -187,13 +187,17 @@ def _render_table(node: dict[str, Any]) -> str:
 
 
 def _render_cell(cell: dict[str, Any]) -> str:
-    """Render a table cell, joining its child blocks' texts with single spaces."""
+    """Render a table cell, joining its child blocks' texts with single spaces.
+
+    Pipe rows cannot contain newlines, so line breaks inside a cell flatten
+    to spaces — corrupting the row would lose far more than the break.
+    """
     parts = []
     for child in cell.get("content", []):
         if isinstance(child, dict):
             part = _render_block(child)
             if part:
-                parts.append(part)
+                parts.append(" ".join(part.split("\n")))
     return " ".join(parts)
 
 
@@ -225,12 +229,14 @@ def _escape_markdown(text: str, at_line_start: bool) -> str:
             escaped_chars.append(char)
     escaped = "".join(escaped_chars)
     if at_line_start:
-        if escaped[:1] in ("-", "+"):
-            escaped = "\\" + escaped
+        indent = re.match(r"^ {0,3}", escaped).end()
+        rest = escaped[indent:]
+        if rest[:1] in ("-", "+"):
+            escaped = escaped[:indent] + "\\" + rest
         else:
-            marker = _ORDERED_MARKER_RE.match(escaped)
+            marker = _ORDERED_MARKER_RE.match(rest)
             if marker:
-                dot = marker.start(1)
+                dot = indent + marker.start(1)
                 escaped = escaped[:dot] + "\\" + escaped[dot:]
     return escaped
 
