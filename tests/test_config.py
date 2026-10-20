@@ -15,7 +15,7 @@ class TestConfig(unittest.TestCase):
             "JIRA_ALLOWED_PROJECTS": "PROJ1,PROJ2",
         }
 
-    @patch.dict(os.environ, {})
+    @patch.dict(os.environ, {}, clear=True)
     def test_missing_required_environment_variables(self):
         """Neither JIRA_API_TOKEN nor JIRA_API_TOKEN_FILE set - should raise ValueError mentioning JIRA_API_TOKEN"""
         with self.assertRaises(ValueError) as cm:
@@ -32,7 +32,7 @@ class TestConfig(unittest.TestCase):
             config = JiraConfig.from_env()
             self.assertEqual(config.api_token, "secret")
 
-    @patch.dict(os.environ, {})
+    @patch.dict(os.environ, {}, clear=True)
     def test_api_token_from_file(self):
         """API token from JIRA_API_TOKEN_FILE environment variable"""
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
@@ -49,7 +49,7 @@ class TestConfig(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
-    @patch.dict(os.environ, {})
+    @patch.dict(os.environ, {}, clear=True)
     def test_api_token_from_file_with_whitespace(self):
         """API token from file with surrounding whitespace should be stripped"""
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
@@ -66,6 +66,7 @@ class TestConfig(unittest.TestCase):
         finally:
             os.unlink(temp_file_path)
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_both_token_variables_set(self):
         """Both JIRA_API_TOKEN and JIRA_API_TOKEN_FILE set - should raise ValueError"""
         with patch.dict(os.environ, {
@@ -77,7 +78,7 @@ class TestConfig(unittest.TestCase):
                 JiraConfig.from_env()
             self.assertEqual(str(cm.exception), "Set only one of JIRA_API_TOKEN and JIRA_API_TOKEN_FILE")
 
-    @patch.dict(os.environ, {})
+    @patch.dict(os.environ, {}, clear=True)
     def test_missing_token_file(self):
         """JIRA_API_TOKEN_FILE points to non-existent file - should raise ValueError naming the path"""
         with patch.dict(os.environ, {
@@ -88,7 +89,7 @@ class TestConfig(unittest.TestCase):
                 JiraConfig.from_env()
             self.assertIn("/non/existent/path", str(cm.exception))
 
-    @patch.dict(os.environ, {})
+    @patch.dict(os.environ, {}, clear=True)
     def test_empty_token_file(self):
         """JIRA_API_TOKEN_FILE points to empty file - should raise ValueError naming the path"""
         with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
