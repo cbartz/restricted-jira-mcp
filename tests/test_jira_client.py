@@ -688,6 +688,46 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertEqual(session.calls, [])
 
+    def test_get_issue_exposes_raw_adf_for_cell_hard_breaks(self):
+        # Cell-level hard breaks flatten to spaces on read; writing that back
+        # loses the boundary, so the raw ADF must travel with the response.
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["description"] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [
+                                                {"type": "text", "text": "a"},
+                                                {"type": "hardBreak"},
+                                                {"type": "text", "text": "b"},
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertIn("description_adf", issue)
+
     def test_search_does_not_request_custom_fields(self):
         """Test that search does not request custom fields."""
         session = FakeSession()

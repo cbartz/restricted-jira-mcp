@@ -609,22 +609,9 @@ def _convert_block(node: SyntaxTreeNode) -> dict | None:
             elif child.type == "hr":
                 children.append({"type": "paragraph", "content": [_text_node("---", [])]})
             elif child.type == "blockquote":
-                for sub in child.children:
-                    if sub.type == "heading":
-                        children.append({"type": "paragraph", "content": _inline_content(sub)})
-                    elif sub.type == "hr":
-                        children.append({"type": "paragraph", "content": [_text_node("---", [])]})
-                    else:
-                        block = _convert_block(sub)
-                        if block:
-                            children.append(block)
+                _flatten_quote(child, children)
             elif child.type == "table":
-                cells = [
-                    _descendant_text(cell).strip()
-                    for row in child.children
-                    for cell in row.children
-                ]
-                children.append({"type": "paragraph", "content": [_text_node(" | ".join(cells), [])]})
+                children.append(_table_paragraph(child))
             else:
                 block = _convert_block(child)
                 if block:
@@ -694,7 +681,45 @@ def _cell_content(cell: SyntaxTreeNode) -> list[dict]:
             block = _convert_block(child)
             if block:
                 paragraphs.append(block)
+    if not paragraphs:
+        # An empty content list is invalid ADF for a cell; keep an empty
+        # paragraph so the cell survives validation.
+        paragraphs = [{"type": "paragraph", "content": []}]
     return paragraphs
+
+
+def _table_paragraph(table: SyntaxTreeNode) -> dict:
+    """Degrade a table to one paragraph of its cell texts, traversing
+    sections → rows → cells (tree nodes nest rows under thead/tbody)."""
+    cells = []
+    for section in table.children:
+        rows = section.children if section.type in ("thead", "tbody") else [section]
+        for row in rows:
+            if row.type != "tr":
+                continue
+            for cell in row.children:
+                text = _descendant_text(cell).strip()
+                if text:
+                    cells.append(text)
+    return {"type": "paragraph", "content": [_text_node(" | ".join(cells), [])]}
+
+
+def _flatten_quote(quote: SyntaxTreeNode, children: list[dict]) -> None:
+    """Lift a blockquote's content into list-item children; ADF rejects
+    blockquotes inside list items, so nested quotes flatten recursively."""
+    for sub in quote.children:
+        if sub.type == "heading":
+            children.append({"type": "paragraph", "content": _inline_content(sub)})
+        elif sub.type == "hr":
+            children.append({"type": "paragraph", "content": [_text_node("---", [])]})
+        elif sub.type == "blockquote":
+            _flatten_quote(sub, children)
+        elif sub.type == "table":
+            children.append(_table_paragraph(sub))
+        else:
+            block = _convert_block(sub)
+            if block:
+                children.append(block)
 
 
 def _inline_content(node: SyntaxTreeNode) -> list[dict]:

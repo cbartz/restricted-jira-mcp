@@ -537,8 +537,14 @@ def _needs_raw_adf(value: Any) -> bool:
         if node_type == "table":
             for row in content:
                 for cell in row.get("content", []):
-                    if any(child.get("type") == "codeBlock" for child in cell.get("content", [])):
+                    blocks = cell.get("content", [])
+                    if len(blocks) > 1:
                         return True
+                    for block in blocks:
+                        if block.get("type") == "codeBlock":
+                            return True
+                        if any(node.get("type") == "hardBreak" for node in block.get("content", [])):
+                            return True
         return any(_needs_raw_adf(child) for child in content)
     if isinstance(value, list):
         return any(_needs_raw_adf(item) for item in value)

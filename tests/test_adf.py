@@ -1559,10 +1559,37 @@ class TestMarkdownToAdf(unittest.TestCase):
         fourth = items[3]
         self.assertEqual(fourth["content"][1]["type"], "paragraph")
         self.assertEqual(fourth["content"][1]["content"][0]["text"], "inner")
-        # A table inside an item degrades to one paragraph of its cell text.
+        # A table inside an item degrades to one paragraph of its cell text,
+        # traversing sections → rows → cells.
         fifth = items[4]
         self.assertEqual(fifth["content"][1]["type"], "paragraph")
         self.assertEqual(fifth["content"][1]["content"][0]["text"], "a | 1")
+
+    def test_flattens_multi_cell_table_in_list_item(self):
+        # Row-wise traversal would glue each row's cells together ("ab | 12");
+        # the cell texts must stay individual.
+        adf = markdown_to_adf("- t\n  | a | b |\n  | --- | --- |\n  | 1 | 2 |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1]["content"][0]["text"], "a | b | 1 | 2")
+
+    def test_normalizes_nested_blockquotes_in_list_items(self):
+        adf = markdown_to_adf("- item\n  > > quoted")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual([c["type"] for c in item["content"]], ["paragraph", "paragraph"])
+        self.assertEqual(item["content"][1]["content"][0]["text"], "quoted")
+
+    def test_normalizes_quoted_table_in_list_items(self):
+        adf = markdown_to_adf("- q\n  > | a |\n  > | --- |\n  > | 1 |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1]["type"], "paragraph")
+        self.assertEqual(item["content"][1]["content"][0]["text"], "a | 1")
+
+    # Markdown's empty table cells must become cells holding an empty
+    # paragraph: an empty cell content list is invalid ADF.
+    def test_empty_markdown_cell_gets_empty_paragraph(self):
+        adf = markdown_to_adf("| a |  |\n| --- | --- |\n| 1 | 2 |")
+        header_cells = adf["content"][0]["content"][0]["content"]
+        self.assertEqual(header_cells[1], {"type": "tableHeader", "content": [{"type": "paragraph", "content": []}]})
 
     # Inline code keeps only marks ADF allows alongside code (link); anything
     # else (strong, em, strike) would make the document invalid for Jira.
