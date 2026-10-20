@@ -1540,7 +1540,53 @@ class TestAdfToText(unittest.TestCase):
         )
 
 
+    def test_whitespace_only_link_label_keeps_its_spaces(self):
+        # An empty label would make the write converter insert the URL; the
+        # whitespace itself must stay inside the brackets.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": " ", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "a[ ](https://x.y)b")
+        reparsed = markdown_to_adf(text)
+        node = reparsed["content"][0]["content"][1]
+        self.assertEqual(node["text"], " ")
+        self.assertEqual(node["marks"], [{"type": "link", "attrs": {"href": "https://x.y"}}])
+
+
 class TestMarkdownToAdf(unittest.TestCase):
+    # Blockquotes normalize their children like list items do, except rules
+    # (which blockquotes support): headings flatten, nested quotes lift,
+    # tables degrade to cell text, and an empty quote gains an empty paragraph.
+    def test_normalizes_blockquote_children_for_adf(self):
+        adf = markdown_to_adf("> # Title\n> > note\n> ---\n> done\n>\n> | a |\n> | --- |\n> | 1 |")
+        children = adf["content"][0]["content"]
+        self.assertEqual(children[0], {"type": "paragraph", "content": [{"type": "text", "text": "Title"}]})
+        self.assertEqual(children[1], {"type": "paragraph", "content": [{"type": "text", "text": "note"}]})
+        self.assertEqual(children[2], {"type": "rule"})
+        self.assertEqual(children[3], {"type": "paragraph", "content": [{"type": "text", "text": "done"}]})
+        self.assertEqual(children[4], {"type": "paragraph", "content": [{"type": "text", "text": "a | 1"}]})
+
+    def test_empty_blockquote_gets_empty_paragraph(self):
+        adf = markdown_to_adf(">")
+        self.assertEqual(adf["content"], [{"type": "blockquote", "content": [{"type": "paragraph", "content": []}]}])
+
+    def test_degrades_all_empty_table_in_list_item_to_empty_paragraph(self):
+        adf = markdown_to_adf("- t\n  | | |\n  | --- | --- |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1], {"type": "paragraph", "content": []})
+
     # ADF list items must start with a paragraph, need a child even when the
     # markdown item is empty, and reject heading/rule/blockquote/table
     # children; each normalizes to a form Jira accepts without losing text.

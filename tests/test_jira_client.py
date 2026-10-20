@@ -359,6 +359,7 @@ class JiraClientTests(unittest.TestCase):
                     "updated": "2026-01-02T10:00:00.000+0000",
                     "visibility": None,
                     "public": True,
+                    "body_adf": adf_doc("Looks good to me"),
                 }
             ],
         )
@@ -594,8 +595,9 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(issue["description"], "Screenshot:")
         self.assertEqual(issue["description_adf"], media_description)
 
-    def test_get_issue_omits_raw_adf_for_representable_descriptions(self):
-        # Ordinary descriptions need no raw ADF; keep responses lean.
+    def test_get_issue_always_carries_raw_adf(self):
+        # Every description carries its original ADF: markdown cannot keep
+        # every ADF structure, and the trigger-list approach kept leaking.
         session = FakeSession()
         payload = issue_payload("ISD-5444", "ISD")
         payload["fields"]["description"] = adf_doc("plain text")
@@ -603,7 +605,7 @@ class JiraClientTests(unittest.TestCase):
 
         issue = client(session).get_issue("ISD-5444")
 
-        self.assertNotIn("description_adf", issue)
+        self.assertEqual(issue["description_adf"], adf_doc("plain text"))
 
     def test_get_issue_exposes_raw_adf_for_trailing_break_descriptions(self):
         # A paragraph ending in a hard break renders a trailing newline that

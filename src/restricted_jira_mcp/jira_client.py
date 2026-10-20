@@ -131,10 +131,11 @@ class JiraClient:
         if custom_fields:
             issue["custom_fields"] = custom_fields
 
-        # Media cannot be represented in markdown; expose the original ADF so
-        # an update can preserve embedded attachments instead of deleting them.
+        # The readable description is markdown-shaped; markdown cannot keep
+        # every ADF structure (media, some breaks and cell layouts), so the
+        # original always travels with the response for lossless updates.
         description = payload.get("fields", {}).get("description")
-        if _needs_raw_adf(description):
+        if description:
             issue["description_adf"] = description
 
         return issue
@@ -512,43 +513,12 @@ def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
         "visibility": _comment_visibility(comment.get("visibility")),
         "public": comment.get("jsdPublic", True),
     }
-    # Media cannot be represented in markdown; expose the original ADF so an
-    # update can preserve embedded attachments instead of deleting them.
-    if _needs_raw_adf(body):
+    # The readable body is markdown-shaped; markdown cannot keep every ADF
+    # structure, so the original always travels with the response for
+    # lossless updates.
+    if body:
         compacted["body_adf"] = body
     return compacted
-
-
-_MEDIA_TYPES = frozenset({"media", "mediaSingle", "mediaInline", "mediaGroup"})
-
-
-def _needs_raw_adf(value: Any) -> bool:
-    """True when the ADF tree holds content a markdown round trip cannot keep:
-    uploaded media, a paragraph ending in a hard break (the trailing newline
-    is discarded on write-back), or a code block inside a table cell (cells
-    flatten to inline text, losing the code and its language)."""
-    if isinstance(value, dict):
-        node_type = value.get("type")
-        if node_type in _MEDIA_TYPES:
-            return True
-        content = value.get("content", [])
-        if node_type == "paragraph" and content and content[-1].get("type") == "hardBreak":
-            return True
-        if node_type == "table":
-            for row in content:
-                for cell in row.get("content", []):
-                    blocks = cell.get("content", [])
-                    if len(blocks) > 1:
-                        return True
-                    for block in blocks:
-                        if block.get("type") == "codeBlock":
-                            return True
-                        if any(node.get("type") == "hardBreak" for node in block.get("content", [])):
-                            return True
-        return any(_needs_raw_adf(child) for child in content)
-    if isinstance(value, list):
-        return any(_needs_raw_adf(item) for item in value)
-    return False
 
 
 def _display_user(user: dict[str, Any] | None) -> dict[str, Any] | None:

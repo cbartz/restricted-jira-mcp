@@ -152,7 +152,7 @@ For HTTP deployment, see the "Running over HTTP" section above. With HTTP, agent
 - `jira_get_issue(issue_key)`
   - Returns full description text (no truncation)
   - Includes allowlisted custom fields under "custom_fields": ADF-valued fields carry both `text` (readable, full length) and `adf` (the original object — pass it back unchanged when updating, since those fields reject bare strings); non-ADF values JSON-dump; scalars pass through
-  - When a description or comment body holds content a markdown round trip cannot keep — uploaded media, a paragraph ending in a line break, or a code block inside a table cell — the response also carries the original object as `description_adf` / `body_adf`; include it unchanged in the update's fields/body to avoid losing that content
+  - Every description and comment body also carries its original object as `description_adf` / `body_adf` — markdown cannot keep every ADF structure (uploaded media, some break and cell layouts), so pass the ADF back unchanged in an update when you need a lossless write
 - `jira_get_comments(issue_key, max_results=25, start_at=0)`
   - Returns full comment text (no truncation)
 - `jira_search(jql, max_results=25)`
@@ -177,7 +177,7 @@ Descriptions and comment bodies accept:
 - Raw ADF doc dict
 - Wiki markup is NOT supported
 
-Reads render ADF to Markdown-shaped text losslessly for the structures above. Content markdown cannot express (embedded media, Jira widgets like status lozenges, dates, and smart links) degrades to readable text — a `status` becomes its label, a `date` becomes its ISO date, a smart link becomes a plain link, and uploaded media only survives an update if you pass the original ADF back (see `description_adf` / `body_adf` above).
+Reads render ADF to Markdown-shaped text losslessly for the structures above. Content markdown cannot express (embedded media, Jira widgets like status lozenges, dates, and smart links) degrades to readable text — a `status` becomes its label, a `date` becomes its ISO date, a smart link becomes a plain link. For a fully lossless update of anything markdown can't represent, pass the original ADF back (every read carries it as `description_adf` / `body_adf`, see above).
 
 For example:
 

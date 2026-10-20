@@ -440,6 +440,10 @@ def _render_marked_run(
         if title:
             escaped_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("&", "\\&")
             title_part = f' "{escaped_title}"'
+        if not core:
+            # Whitespace-only label: keep the spaces inside the brackets, or
+            # the write converter would replace the empty label with the URL.
+            return f"[{text}]({destination}{title_part})"
         if any(mark.get("type") == "code" for mark in marks):
             # Code spans keep their boundary whitespace inside themselves, so
             # the exterior lead/trail must not be added again.
@@ -624,7 +628,23 @@ def _convert_block(node: SyntaxTreeNode) -> dict | None:
     if node_type in ("fence", "code_block"):
         return _convert_code_block(node)
     if node_type == "blockquote":
-        return {"type": "blockquote", "content": _convert_blocks(node.children)}
+        # ADF blockquotes reject headings, nested quotes and tables; rules are
+        # supported. Normalize the same way list items do, minus the rules.
+        children: list[dict] = []
+        for child in node.children:
+            if child.type == "heading":
+                children.append({"type": "paragraph", "content": _inline_content(child)})
+            elif child.type == "blockquote":
+                _flatten_quote(child, children)
+            elif child.type == "table":
+                children.append(_table_paragraph(child))
+            else:
+                block = _convert_block(child)
+                if block:
+                    children.append(block)
+        if not children:
+            children = [{"type": "paragraph", "content": []}]
+        return {"type": "blockquote", "content": children}
     if node_type == "table":
         return _convert_table(node)
     if node_type == "hr":
@@ -701,6 +721,8 @@ def _table_paragraph(table: SyntaxTreeNode) -> dict:
                 text = _descendant_text(cell).strip()
                 if text:
                     cells.append(text)
+    if not cells:
+        return {"type": "paragraph", "content": []}
     return {"type": "paragraph", "content": [_text_node(" | ".join(cells), [])]}
 
 
