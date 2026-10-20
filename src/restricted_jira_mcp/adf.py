@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from markdown_it import MarkdownIt
@@ -50,7 +51,7 @@ def _render_block(node: dict[str, Any]) -> str:
     node_type = node.get("type")
 
     if node_type == "paragraph":
-        return _render_inline(node.get("content", []))
+        return _render_inline(node.get("content", []), at_line_start=True)
     elif node_type == "heading":
         level = node.get("attrs", {}).get("level", 1)
         text = _render_inline(node.get("content", []))
@@ -176,37 +177,93 @@ def _render_cell(cell: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _render_inline(nodes: list[Any]) -> str:
-    """Render a list of inline nodes with proper formatting."""
-    if not nodes:
-        return ""
-    
+# Characters that markdown treats as structure wherever they appear in a line.
+_ALWAYS_ESCAPE = frozenset("\\`*[]#<>~|")
+
+# Ordered-list markers: digits followed by . or ) and whitespace.
+_ORDERED_MARKER_RE = re.compile(r"^\d+([.)])(\s|$)")
+
+
+def _escape_markdown(text: str, at_line_start: bool) -> str:
+    """Backslash-escape the characters that would change meaning on re-parse.
+
+    Only line-initial ``-``/``+`` and ordered markers need line-start
+    treatment; the always-escape set applies everywhere. Intraword underscores
+    stay readable because CommonMark leaves them literal.
+    """
+    escaped_chars = []
+    for i, char in enumerate(text):
+        if char == "_":
+            prev_alnum = i > 0 and text[i - 1].isalnum()
+            next_alnum = i + 1 < len(text) and text[i + 1].isalnum()
+            escaped_chars.append(char if prev_alnum and next_alnum else "\\" + char)
+        elif char == "!" and i + 1 < len(text) and text[i + 1] == "[":
+            escaped_chars.append("\\" + char)
+        elif char in _ALWAYS_ESCAPE:
+            escaped_chars.append("\\" + char)
+        else:
+            escaped_chars.append(char)
+    escaped = "".join(escaped_chars)
+    if at_line_start:
+        if escaped[:1] in ("-", "+"):
+            escaped = "\\" + escaped
+        else:
+            marker = _ORDERED_MARKER_RE.match(escaped)
+            if marker:
+                dot = marker.start(1)
+                escaped = escaped[:dot] + "\\" + escaped[dot:]
+    return escaped
+
+
+def _render_code_span(text: str) -> str:
+    """Wrap text in a code span whose backtick fence outlives the content's."""
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(longest_run + 1, 1)
+    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
+        return f"{fence} {text} {fence}"
+    return f"{fence}{text}{fence}"
+
+
+def _render_inline(nodes: list[Any], at_line_start: bool = False) -> str:
+    """Render a list of inline nodes with proper formatting.
+
+    at_line_start marks whether the first node sits at the start of a markdown
+    line; a hard break makes every following node line-initial too, which
+    matters for escaping list markers.
+    """
     parts = []
+    line_start = at_line_start
     for node in nodes:
         if isinstance(node, dict):
-            part = _render_inline_node(node)
+            part = _render_inline_node(node, line_start)
             if part:
                 parts.append(part)
-    
+                line_start = part.endswith("\n")
+
     return "".join(parts)
 
 
-def _render_inline_node(node: dict[str, Any]) -> str:
+def _render_inline_node(node: dict[str, Any], at_line_start: bool = False) -> str:
     """Render a single inline node."""
     node_type = node.get("type")
-    
+
     if node_type == "text":
         text = node.get("text", "")
         # Apply marks to this text node
         marks = node.get("marks", [])
+        if any(mark.get("type") == "code" for mark in marks):
+            # Backslash escapes do not exist inside code spans; the span itself
+            # keeps the content literal, so only its fence length adapts.
+            text = _render_code_span(text)
+            marks = [mark for mark in marks if mark.get("type") != "code"]
+        else:
+            text = _escape_markdown(text, at_line_start)
         for mark in reversed(marks):
             mark_type = mark.get("type")
             if mark_type == "strong":
                 text = f"**{text}**"
             elif mark_type == "em":
                 text = f"*{text}*"
-            elif mark_type == "code":
-                text = f"`{text}`"
             elif mark_type == "link":
                 href = mark.get("attrs", {}).get("href", "")
                 text = f"[{text}]({href})"
@@ -224,7 +281,7 @@ def _render_inline_node(node: dict[str, Any]) -> str:
     else:
         # For other unknown inline nodes, try to render their content
         content = node.get("content", [])
-        return _render_inline(content)
+        return _render_inline(content, at_line_start)
 
 
 # Parser for the Markdown → ADF write path: CommonMark plus the table and

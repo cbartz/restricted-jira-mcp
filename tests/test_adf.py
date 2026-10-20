@@ -557,6 +557,122 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(result, expected)
 
 
+    def test_escapes_markdown_metacharacters_in_plain_text(self):
+        # Literal ADF text must survive a read→update round trip: characters
+        # that markdown would treat as structure get backslash-escaped.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "*literal*"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "# not a heading"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "- not a list"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "1. not numbered"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "a | b"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(
+            result,
+            "\\*literal\\*\n\n\\# not a heading\n\n\\- not a list\n\n1\\. not numbered\n\na \\| b",
+        )
+
+    def test_leaves_intraword_underscores_readable(self):
+        # CommonMark leaves intraword underscores literal, so snake_case need
+        # no escaping; a boundary underscore does.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "snake_case and _emphasized_"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "snake_case and \\_emphasized\\_")
+
+    def test_escapes_after_hard_break(self):
+        # A line after a hard break starts a new markdown line, so its leading
+        # "-" would become a list item on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "- second"},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "first\n\\- second")
+
+    def test_code_mark_with_backticks_round_trips(self):
+        # Inline code containing backticks needs a longer code span; its
+        # content stays literal (backslash escapes do not exist inside spans).
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "run `cmd`", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "`` run `cmd` ``")
+
+    def test_round_trips_through_markdown_conversion(self):
+        # The lossless contract: adf → markdown text → adf reproduces the
+        # original document exactly for the supported structures.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Plan"}]},
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Do it "},
+                        {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": ", see "},
+                        {"type": "text", "text": "docs", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                        {"type": "text", "text": "*carefully*"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "- not a list"},
+                    ],
+                },
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step"}]}]},
+                    ],
+                },
+                {"type": "blockquote", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]}]},
+                {"type": "codeBlock", "attrs": {"language": "python"}, "content": [{"type": "text", "text": "if x:\n    run()"}]},
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a | b"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(markdown_to_adf(adf_to_text(doc)), doc)
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
     # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
