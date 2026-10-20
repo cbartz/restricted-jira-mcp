@@ -241,13 +241,14 @@ class JiraClient:
     def update_issue(self, issue_key: str, fields: dict[str, Any]) -> dict[str, str]:
         self.policy.ensure_issue_allowed(issue_key)
         validated = self.policy.validate_update_fields(_normalize_fields(fields))
+        resolved_key = self._resolve_issue(issue_key)
         response = self.session.put(
-            self._url(f"/rest/api/3/issue/{issue_key.upper()}"),
+            self._url(f"/rest/api/3/issue/{resolved_key}"),
             json={"fields": validated},
             timeout=30,
         )
         self._raise_for_status(response)
-        return {"status": "updated", "issue_key": issue_key.upper()}
+        return {"status": "updated", "issue_key": resolved_key}
 
     def link_issues(
         self,
@@ -255,8 +256,10 @@ class JiraClient:
         to_issue_key: str,
         link_type: str = "Relates",
     ) -> dict[str, str]:
-        inward = self.policy.normalize_issue_key(from_issue_key)
-        outward = self.policy.normalize_issue_key(to_issue_key)
+        self.policy.ensure_issue_allowed(from_issue_key)
+        self.policy.ensure_issue_allowed(to_issue_key)
+        inward = self._resolve_issue(from_issue_key)
+        outward = self._resolve_issue(to_issue_key)
         response = self.session.post(
             self._url("/rest/api/3/issueLink"),
             json={

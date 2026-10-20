@@ -1565,6 +1565,48 @@ class TestAdfToText(unittest.TestCase):
         self.assertEqual(node["marks"], [{"type": "link", "attrs": {"href": "https://x.y"}}])
 
 
+    def test_exclamation_before_generated_link_stays_literal(self):
+        # "See!" followed by a separate linked node renders "See![docs](url)",
+        # which CommonMark reads as an image; the "!" must be escaped across
+        # the run boundary.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "See!"},
+                        {"type": "text", "text": "docs", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "See\\![docs](https://x.y)")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_shifted_ampersand_cannot_form_an_entity(self):
+        # Shifting "&" out of the delimiters must not leave it next to the
+        # following run's text ("**R&**" + "copy;" → "**R**&copy;").
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "R&", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "copy;"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**R**\\&copy;")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "R")
+
+
 class TestMarkdownToAdf(unittest.TestCase):
     # Blockquotes normalize their children like list items do, except rules
     # (which blockquotes support): headings flatten, nested quotes lift,

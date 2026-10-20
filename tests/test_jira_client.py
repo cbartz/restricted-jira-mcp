@@ -177,7 +177,7 @@ class JiraClientTests(unittest.TestCase):
 
         client(session).update_issue("ISD-5444", {"description": "hello"})
 
-        request_json = session.calls[0][2]["json"]
+        request_json = session.calls[1][2]["json"]
         self.assertEqual(request_json["fields"]["description"], adf_doc("hello"))
 
         with self.assertRaises(PolicyError):
@@ -213,11 +213,15 @@ class JiraClientTests(unittest.TestCase):
 
     def test_link_issues_posts_normalized_keys(self):
         session = FakeSession()
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, issue_payload("ISREQ-5090", "ISREQ")),
+        ]
         session.next_post = FakeResponse(201)
 
         result = client(session, ("ISD", "ISREQ")).link_issues("isd-5444", "isreq-5090")
 
-        method, url, kwargs = session.calls[0]
+        method, url, kwargs = session.calls[2]
         self.assertEqual(method, "POST")
         self.assertTrue(url.endswith("/rest/api/3/issueLink"))
         self.assertEqual(
@@ -408,7 +412,7 @@ class JiraClientTests(unittest.TestCase):
 
         client(session).update_issue("ISD-5445", {"parent": "isd-5444"})
 
-        request_json = session.calls[0][2]["json"]
+        request_json = session.calls[1][2]["json"]
         self.assertEqual(request_json["fields"]["parent"], {"key": "ISD-5444"})
 
         with self.assertRaises(PolicyError):
@@ -420,7 +424,7 @@ class JiraClientTests(unittest.TestCase):
         
         client(session).update_issue("ISD-5444", {"description": "## Plan\n\n- do it"})
         
-        request_json = session.calls[0][2]["json"]
+        request_json = session.calls[1][2]["json"]
         description = request_json["fields"]["description"]
         self.assertEqual(description["type"], "doc")
         self.assertEqual(description["version"], 1)
@@ -442,7 +446,7 @@ class JiraClientTests(unittest.TestCase):
         
         client(session).update_issue("ISD-5444", {"description": raw_adf})
         
-        request_json = session.calls[0][2]["json"]
+        request_json = session.calls[1][2]["json"]
         self.assertEqual(request_json["fields"]["description"], raw_adf)
 
     def test_update_issue_rejects_invalid_adf_description(self):
@@ -729,6 +733,29 @@ class JiraClientTests(unittest.TestCase):
         issue = client(session).get_issue("ISD-5444")
 
         self.assertIn("description_adf", issue)
+
+    def test_update_issue_rejects_issue_resolved_to_disallowed_project(self):
+        session = FakeSession()
+        session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "NDA"))]
+
+        with self.assertRaises(PolicyError):
+            client(session).update_issue("ISD-5444", {"summary": "x"})
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(session.calls[0][1].endswith("/rest/api/3/issue/ISD-5444"))
+
+    def test_link_issues_rejects_moved_target(self):
+        session = FakeSession()
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, issue_payload("ISREQ-5090", "NDA")),
+        ]
+
+        with self.assertRaises(PolicyError):
+            client(session, ("ISD", "ISREQ")).link_issues("ISD-5444", "ISREQ-5090")
+
+        self.assertEqual(len(session.calls), 2)
+        self.assertFalse(any(call[0] == "POST" for call in session.calls))
 
     def test_search_does_not_request_custom_fields(self):
         """Test that search does not request custom fields."""

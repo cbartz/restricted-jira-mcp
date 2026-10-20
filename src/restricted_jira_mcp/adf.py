@@ -374,7 +374,13 @@ def _render_inline(nodes: list[Any], at_line_start: bool = False) -> str:
             elif next_item[0] == "chunk":
                 next_char = next_item[1][:1]
             else:
-                next_char = next_item[2][:1]
+                next_text = next_item[2]
+                if next_text and any(mark.get("type") == "link" for mark in next_item[1]):
+                    # A linked run renders as "[label](...)" — the boundary
+                    # character the parser sees is the bracket, not the label.
+                    next_char = "["
+                else:
+                    next_char = next_text[:1]
             rendered = _render_marked_run(marks, text, line_start, prev_char=prev_char, next_char=next_char)
         if rendered:
             parts.append(rendered)
@@ -422,7 +428,11 @@ def _render_marked_run(
         return bool(char) and not char.isalnum() and not char.isspace()
 
     if not marks:
-        return _escape_markdown(text, at_line_start)
+        escaped = _escape_markdown(text, at_line_start)
+        if escaped.endswith("!") and next_char == "[":
+            # "![" starts an image across the run boundary.
+            escaped = escaped[:-1] + "\\!"
+        return escaped
     lead = re.match(r"^\s*", text).group(0)
     core = text[len(lead):]
     trail_match = re.search(r"\s*$", core)
@@ -473,6 +483,9 @@ def _render_marked_run(
     shifted = ""
     if _punct(core[-1]) and _word(next_char):
         shifted = core[-1]
+        if shifted == "&":
+            # "&" next to the following run's text would form an entity.
+            shifted = "\\&"
         core = core[:-1]
         if not core:
             return _escape_markdown(text, at_line_start)
