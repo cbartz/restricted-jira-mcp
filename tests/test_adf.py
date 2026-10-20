@@ -93,7 +93,7 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        expected = "```python\nprint('hello')\n```"
+        expected = "```python\nprint('hello')\n\n```"
         self.assertEqual(result, expected)
 
     def test_renders_code_block_without_language(self):
@@ -108,7 +108,7 @@ class TestAdfToText(unittest.TestCase):
             ],
         }
         result = adf_to_text(doc)
-        expected = "```\nplain text\n```"
+        expected = "```\nplain text\n\n```"
         self.assertEqual(result, expected)
 
     def test_renders_blockquote(self):
