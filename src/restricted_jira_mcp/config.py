@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-import os
+import json
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+PLACEHOLDER = "CHANGE_ME"
+_WILDCARD_HOSTS = ("0.0.0.0", "::")
 
 
 @dataclass(frozen=True)
@@ -12,69 +17,116 @@ class JiraConfig:
     allowed_projects: tuple[str, ...]
     allowed_custom_fields: tuple[str, ...] = ()
 
-    @classmethod
-    def from_env(cls) -> "JiraConfig":
-        missing = [
-            name
-            for name in (
-                "JIRA_BASE_URL",
-                "JIRA_EMAIL",
-                "JIRA_ALLOWED_PROJECTS",
-            )
-            if not os.environ.get(name)
-        ]
-        if missing:
-            # When checking for tokens, we need to include JIRA_API_TOKEN in the error message
-            # if neither token variable is set
-            if not os.environ.get("JIRA_API_TOKEN") and not os.environ.get("JIRA_API_TOKEN_FILE"):
-                missing.append("JIRA_API_TOKEN")
-            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-        api_token = _load_api_token()
+@dataclass(frozen=True)
+class HTTPConfig:
+    host: str
+    port: int
+    client_token: str
+    allowed_hosts: tuple[str, ...] = ()
 
-        return cls(
-            base_url=os.environ["JIRA_BASE_URL"].rstrip("/"),
-            email=os.environ["JIRA_EMAIL"],
-            api_token=api_token,
-            allowed_projects=_csv_env("JIRA_ALLOWED_PROJECTS"),
-            allowed_custom_fields=_csv_env("JIRA_ALLOWED_CUSTOM_FIELDS"),
+
+@dataclass(frozen=True)
+class ServerConfig:
+    jira: JiraConfig
+    http: HTTPConfig | None = None
+
+
+def load_config(path: str | Path) -> ServerConfig:
+    """Load and validate the JSON config file.
+
+    The "http" section is optional; without it the config only serves stdio.
+    Any unusable value — unknown keys included, so a typo never silently drops
+    a restriction — raises ValueError naming the offending key.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except OSError as exc:
+        raise ValueError(f"Could not read config file {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in config file {path}: {exc}") from exc
+
+    _check_keys(data, "config", required=("jira",), optional=("http",))
+    http = data.get("http")
+    return ServerConfig(
+        jira=_jira_config(data["jira"]),
+        http=None if http is None else _http_config(http),
+    )
+
+
+def _jira_config(section: Any) -> JiraConfig:
+    _check_keys(
+        section,
+        "jira",
+        required=("base_url", "email", "api_token", "allowed_projects"),
+        optional=("allowed_custom_fields",),
+    )
+    projects = _string_list("jira.allowed_projects", section["allowed_projects"])
+    if not projects:
+        raise ValueError("jira.allowed_projects must list at least one project")
+    return JiraConfig(
+        base_url=_required_string(section, "base_url", "jira").rstrip("/"),
+        email=_required_string(section, "email", "jira"),
+        api_token=_required_string(section, "api_token", "jira"),
+        allowed_projects=projects,
+        allowed_custom_fields=_string_list(
+            "jira.allowed_custom_fields", section.get("allowed_custom_fields", [])
+        ),
+    )
+
+
+def _http_config(section: Any) -> HTTPConfig:
+    _check_keys(
+        section,
+        "http",
+        required=("bind_address", "client_token"),
+        optional=("allowed_hosts",),
+    )
+    host, port = _parse_bind_address(_required_string(section, "bind_address", "http"))
+    allowed_hosts = _string_list("http.allowed_hosts", section.get("allowed_hosts", []))
+    if host in _WILDCARD_HOSTS and not allowed_hosts:
+        raise ValueError(
+            f"http.bind_address {host} listens on every interface; list the Host "
+            "values clients use in http.allowed_hosts"
         )
 
-
-def _load_api_token() -> str:
-    """Load API token from environment variable or file.
-    
-    Returns:
-        The API token string
-        
-    Raises:
-        ValueError: If both JIRA_API_TOKEN and JIRA_API_TOKEN_FILE are set,
-                    or if JIRA_API_TOKEN_FILE points to a missing or empty file
-    """
-    token_from_env = os.environ.get("JIRA_API_TOKEN")
-    token_from_file = os.environ.get("JIRA_API_TOKEN_FILE")
-    
-    if token_from_env and token_from_file:
-        raise ValueError("Set only one of JIRA_API_TOKEN and JIRA_API_TOKEN_FILE")
-    
-    if token_from_env:
-        return token_from_env
-    
-    if token_from_file:
-        try:
-            with open(token_from_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                
-            if not content:
-                raise ValueError(f"Token file is empty: {token_from_file}")
-                
-            return content
-        except FileNotFoundError:
-            raise ValueError(f"Token file not found: {token_from_file}")
-    
-    # Neither is set
-    raise ValueError("Missing required environment variables: JIRA_API_TOKEN")
+    return HTTPConfig(
+        host=host,
+        port=port,
+        client_token=_required_string(section, "client_token", "http"),
+        allowed_hosts=allowed_hosts,
+    )
 
 
-def _csv_env(name: str) -> tuple[str, ...]:
-    return tuple(part.strip() for part in os.environ.get(name, "").split(",") if part.strip())
+def _parse_bind_address(value: str) -> tuple[str, int]:
+    """Split "host:port" (IPv6 hosts in brackets) into the bare host and port."""
+    host, _, port = value.rpartition(":")
+    if not host or not port.isdigit():
+        raise ValueError(f"http.bind_address must be host:port, got {value!r}")
+    return host.removeprefix("[").removesuffix("]"), int(port)
+
+
+def _check_keys(section: Any, name: str, required: tuple[str, ...], optional: tuple[str, ...]) -> None:
+    if not isinstance(section, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    missing = [key for key in required if key not in section]
+    if missing:
+        raise ValueError(f"{name} is missing required keys: {', '.join(missing)}")
+    unknown = sorted(set(section) - set(required) - set(optional))
+    if unknown:
+        raise ValueError(f"{name} has unknown keys: {', '.join(unknown)}")
+
+
+def _required_string(section: dict, key: str, name: str) -> str:
+    """Return a required non-empty string value, rejecting the example's placeholder."""
+    value = section[key]
+    if not isinstance(value, str) or not value.strip() or value.strip() == PLACEHOLDER:
+        raise ValueError(f"{name}.{key} must be set (not empty or {PLACEHOLDER})")
+    return value.strip()
+
+
+def _string_list(name: str, value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{name} must be a list of strings")
+    return tuple(item.strip() for item in value if item.strip())

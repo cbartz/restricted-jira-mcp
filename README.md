@@ -4,37 +4,49 @@ A local Jira MCP server that enforces a project allowlist before Jira data is re
 
 ## Why this exists
 
-Atlassian's hosted MCP follows the signed-in user's Jira permissions. If your user can see NDA projects in Jira, prompt instructions are not a security boundary. This server talks to Jira REST directly and only exposes projects listed in `JIRA_ALLOWED_PROJECTS`. The allowlist is a comma-separated list, so several projects can be trusted at once (for example `ISD,ISREQ`).
+Atlassian's hosted MCP follows the signed-in user's Jira permissions. If your user can see NDA projects in Jira, prompt instructions are not a security boundary. This server talks to Jira REST directly and only exposes projects listed in `jira.allowed_projects` of its config file. Several projects can be trusted at once (for example `["ISD", "ISREQ"]`).
 
 ## Configuration
 
-Set these environment variables locally:
+All settings live in one JSON file. Start from the example and lock it down — it holds the Jira API token and the client token:
 
 ```bash
-export JIRA_BASE_URL="https://your-company.atlassian.net"
-export JIRA_EMAIL="you@example.com"
-export JIRA_API_TOKEN="your-token"
-# To load the token from a file instead, unset JIRA_API_TOKEN first — the
-# server refuses to start with both set:
-# unset JIRA_API_TOKEN
-# export JIRA_API_TOKEN_FILE="/path/to/token/file"
-export JIRA_ALLOWED_PROJECTS="ISD,ISREQ"
+sudo mkdir -p /etc/restricted-jira-mcp
+sudo cp config.example.json /etc/restricted-jira-mcp/config.json
+sudo chmod 600 /etc/restricted-jira-mcp/config.json
+sudo chown "$USER" /etc/restricted-jira-mcp/config.json   # the user that runs the server
 ```
 
-Optional:
-
-```bash
-export JIRA_ALLOWED_CUSTOM_FIELDS="customfield_12345,customfield_67890"
+```json
+{
+  "jira": {
+    "base_url": "https://your-company.atlassian.net",
+    "email": "you@example.com",
+    "api_token": "…",
+    "allowed_projects": ["ISD", "ISREQ"],
+    "allowed_custom_fields": []
+  },
+  "http": {
+    "bind_address": "10.81.99.1:8000",
+    "allowed_hosts": [],
+    "client_token": "…"
+  }
+}
 ```
 
-Never commit real tokens. `.env` is ignored; `.env.example` contains placeholders only. If using JIRA_API_TOKEN_FILE, ensure the file is readable only by the Unix user running the server (mode 0600).
+- `jira.allowed_projects` is the security boundary: only these projects are ever requested or returned. `allowed_custom_fields` is optional.
+- The `http` section is only needed for the HTTP transport; a stdio-only setup can leave it out.
+- `client_token` is the bearer token every agent VM sends as `Authorization: Bearer <token>` — the same value, not a hash of it. Generate it with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. Rotating it means updating every VM's MCP config.
+- Unknown keys, empty values and the example's `CHANGE_ME` placeholders are rejected at startup, so a typo never silently drops a restriction.
+
+The server reads the file named by `--config`, or by `$JIRA_MCP_CONFIG` when the flag is absent. It reads it once at startup; restart after editing.
 
 ## Smoke validation
 
 From the repo root:
 
 ```bash
-python3 scripts/smoke_get_issue.py ISD-5444
+uv run python scripts/smoke_get_issue.py --config /etc/restricted-jira-mcp/config.json ISD-5444
 ```
 
 Expected success shape:
@@ -47,76 +59,52 @@ Summary: ...
 A non-allowlisted project should fail before any Jira HTTP request:
 
 ```bash
-python3 scripts/smoke_get_issue.py NDA-123
+uv run python scripts/smoke_get_issue.py --config /etc/restricted-jira-mcp/config.json NDA-123
 ```
-
-## MCP server
-
-Install the MCP SDK before running the MCP server:
-
-```bash
-python3 -m pip install -e .
-python3 -m restricted_jira_mcp.server
-```
-
-This environment currently has `requests` installed but no `pip`, so the smoke test can run without installing anything. The MCP server itself requires the `mcp` Python package.
 
 ## Running over HTTP
 
-Serve over HTTP with bearer token authentication:
-
 ```bash
-python3 -m restricted_jira_mcp.server --transport http --host 127.0.0.1 --port 8000
+uv sync
+PYTHONPATH=src uv run python -m restricted_jira_mcp.server --transport http --config /etc/restricted-jira-mcp/config.json
 ```
 
-Client tokens are stored in `JIRA_MCP_CLIENT_TOKENS_FILE` as SHA-256 hex digests, one per line. Create a token hash with (the `cut` drops the trailing `-` filename that `sha256sum` prints, which the server would reject):
+The MCP endpoint is `http://<bind_address>/mcp`.
 
-```bash
-printf '%s' 'your-client-token' | sha256sum | cut -d' ' -f1
-```
+**Bind address.** Bind to an address only the agent VMs can reach — for LXD VMs, the host's bridge address (`lxc network list`) — rather than `0.0.0.0`. The bearer token is the second layer, not the first. The server speaks plain HTTP; terminate TLS in a reverse proxy if traffic crosses a network you do not trust. Binding a wildcard address (`0.0.0.0`, `::`) requires `allowed_hosts`.
 
-The hash file is read once at startup, so adding or removing a client token requires a server restart to take effect.
+**Allowed Host headers.** Requests whose `Host` header is not on an allow-list get `421 Invalid Host header` (DNS-rebinding protection), and a foreign `Origin` header gets `403`. The allow-list always contains the bind host and the loopback names, with or without a port. If clients reach the server under another name (a DNS name, a NAT or proxied address), add those `Host` values to `allowed_hosts`, for example `["jira-mcp.lan:8000"]`; a trailing `:*` matches any port.
 
-For GitHub Copilot's MCP server setup form, use these values:
-
-```text
-Server Name:
-restricted-jira
-
-Server Type:
-HTTP
-
-URL:
-http://127.0.0.1:8000/mcp
-
-Headers:
-{"Authorization": "Bearer <this-VMs-client-token>"}
-
-Tools:
-*
-```
-
-To reach a server bound to 127.0.0.1 from a remote host, use an SSH tunnel (the default way to reach a 127.0.0.1-bound server):
+To reach a server bound to 127.0.0.1 from a remote host instead, use an SSH tunnel:
 
 ```bash
 ssh -N -L 8000:127.0.0.1:8000 <host>
 ```
 
-This keeps the Host header the MCP SDK expects. For a TLS reverse proxy, note that the SDK performs a Host-header/DNS-rebinding check.
+### GitHub Copilot over HTTP
 
-If the first connect fails due to Copilot's OAuth-discovery quirk (github/copilot-cli#3100), run:
+Put the entry in the VM's `~/.copilot/mcp-config.json`. Prefer editing that file over Copilot's setup form, and keep exactly one `restricted-jira` entry across it and any workspace `.mcp.json` / `.github/mcp.json`:
 
-```bash
-copilot mcp enable restricted-jira
+```json
+{
+  "mcpServers": {
+    "restricted-jira": {
+      "type": "http",
+      "url": "http://<bind_address>/mcp",
+      "headers": {"Authorization": "Bearer <client_token>"},
+      "tools": ["*"]
+    }
+  }
+}
 ```
+
+Restart Copilot after changing it. If the server log shows `POST /mcp` answered 401 followed by `/.well-known/oauth-*` probes, Copilot is not sending the configured header (github/copilot-cli#3100); fix the entry as above, or run `copilot mcp enable restricted-jira` once.
 
 ## Target deployment
 
-Deploy one server outside the agent VMs (host or dedicated VM, dedicated Unix user, token file 0600) serving several agent VMs. Each VM's MCP config holds only the URL and its own client token. A leaked client token grants only the allowlisted operations, not full Atlassian access.
+Deploy one server outside the agent VMs (host or dedicated VM, dedicated Unix user, config file 0600) serving several agent VMs. Each VM's MCP config holds only the URL and the client token. A leaked client token grants only the allowlisted operations, not full Atlassian access; anyone who can read the config file on the host has the Jira API token itself.
 
-## GitHub Copilot MCP configuration
-
-For GitHub Copilot's MCP server setup form, use these values:
+## Running over stdio
 
 ```text
 Server Name:
@@ -126,26 +114,13 @@ Server Type:
 STDIO
 
 Command:
-python3 -m restricted_jira_mcp.server
-
-Environment Variables:
-PYTHONPATH=/absolute/path/to/restricted-jira-mcp/src
-JIRA_BASE_URL=https://your-company.atlassian.net
-JIRA_EMAIL=you@example.com
-JIRA_API_TOKEN=your-token
-JIRA_ALLOWED_PROJECTS=ISD,ISREQ
+bash -lc 'cd /absolute/path/to/restricted-jira-mcp && PYTHONPATH=src uv run python -m restricted_jira_mcp.server --config /etc/restricted-jira-mcp/config.json'
 
 Tools:
 *
 ```
 
-If Copilot is not launched from the repository root, use an absolute command that changes into the repo first:
-
-```bash
-bash -lc 'cd /absolute/path/to/restricted-jira-mcp && PYTHONPATH=src python3 -m restricted_jira_mcp.server'
-```
-
-For HTTP deployment, see the "Running over HTTP" section above. With HTTP, agent VMs hold no Jira token at all.
+Over stdio the agent's machine holds the Jira API token; prefer HTTP when the agent runs in a VM you do not fully trust.
 
 ## Tools exposed
 

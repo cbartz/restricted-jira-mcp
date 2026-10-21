@@ -53,8 +53,7 @@ class JiraClient:
         )
 
     @classmethod
-    def from_env(cls) -> "JiraClient":
-        config = JiraConfig.from_env()
+    def from_config(cls, config: JiraConfig) -> "JiraClient":
         policy = JiraPolicy.create(
             config.allowed_projects,
             config.allowed_custom_fields,
