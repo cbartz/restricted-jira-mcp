@@ -99,6 +99,29 @@ class TestLoadConfig(unittest.TestCase):
                 {"jira": _jira_section(), "http": _http_section(bind_address="0.0.0.0:8000")},
                 "allowed_hosts",
             ),
+            "long-form ipv6 wildcard bind without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="[0:0:0:0:0:0:0:0]:8000")},
+                "allowed_hosts",
+            ),
+            "port out of range": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:65536")},
+                "bind_address",
+            ),
+            "port zero": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:0")},
+                "bind_address",
+            ),
+            "blank project entry": (
+                {"jira": _jira_section(allowed_projects=["ISD", " "])},
+                "allowed_projects",
+            ),
+            "placeholder allowed host": (
+                {
+                    "jira": _jira_section(),
+                    "http": _http_section(bind_address="0.0.0.0:8000", allowed_hosts=["CHANGE_ME"]),
+                },
+                "allowed_hosts",
+            ),
             "missing client token": (
                 {"jira": _jira_section(), "http": {"bind_address": "10.0.0.1:8000"}},
                 "client_token",

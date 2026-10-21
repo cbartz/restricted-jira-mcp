@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 PLACEHOLDER = "CHANGE_ME"
-_WILDCARD_HOSTS = ("0.0.0.0", "::")
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ def _http_config(section: Any) -> HTTPConfig:
     )
     host, port = _parse_bind_address(_required_string(section, "bind_address", "http"))
     allowed_hosts = _string_list("http.allowed_hosts", section.get("allowed_hosts", []))
-    if host in _WILDCARD_HOSTS and not allowed_hosts:
+    if _is_unspecified(host) and not allowed_hosts:
         raise ValueError(
             f"http.bind_address {host} listens on every interface; list the Host "
             "values clients use in http.allowed_hosts"
@@ -102,9 +102,19 @@ def _http_config(section: Any) -> HTTPConfig:
 def _parse_bind_address(value: str) -> tuple[str, int]:
     """Split "host:port" (IPv6 hosts in brackets) into the bare host and port."""
     host, _, port = value.rpartition(":")
-    if not host or not port.isdigit():
-        raise ValueError(f"http.bind_address must be host:port, got {value!r}")
+    if not host or not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError(
+            f"http.bind_address must be host:port with a port from 1 to 65535, got {value!r}"
+        )
     return host.removeprefix("[").removesuffix("]"), int(port)
+
+
+def _is_unspecified(host: str) -> bool:
+    """True for any spelling of the all-interfaces address (0.0.0.0, ::, 0:0:...:0)."""
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
 
 
 def _check_keys(section: Any, name: str, required: tuple[str, ...], optional: tuple[str, ...]) -> None:
@@ -129,4 +139,7 @@ def _required_string(section: dict, key: str, name: str) -> str:
 def _string_list(name: str, value: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{name} must be a list of strings")
-    return tuple(item.strip() for item in value if item.strip())
+    items = tuple(item.strip() for item in value)
+    if any(not item or item == PLACEHOLDER for item in items):
+        raise ValueError(f"{name} entries must be set (not empty or {PLACEHOLDER})")
+    return items
