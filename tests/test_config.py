@@ -107,6 +107,14 @@ class TestLoadConfig(unittest.TestCase):
                 {"jira": _jira_section(), "http": _http_section(bind_address="[0:0:0:0:0:0:0:0]:8000")},
                 "allowed_hosts",
             ),
+            "numeric ipv4 wildcard alias without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="0:8000")},
+                "allowed_hosts",
+            ),
+            "hex ipv4 wildcard alias without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="0x0:8000")},
+                "allowed_hosts",
+            ),
             "port out of range": (
                 {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:65536")},
                 "bind_address",

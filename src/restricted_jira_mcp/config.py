@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,10 +112,15 @@ def _parse_bind_address(value: str) -> tuple[str, int]:
 
 
 def _is_unspecified(host: str) -> bool:
-    """True for any spelling of the all-interfaces address (0.0.0.0, ::, 0:0:...:0)."""
+    """True for any spelling of the all-interfaces address (0.0.0.0, ::, 0:0:...:0, 0, 0x0)."""
     try:
         return ipaddress.ip_address(host).is_unspecified
     except ValueError:
+        pass
+    # The socket layer still accepts legacy inet_aton forms that ipaddress rejects.
+    try:
+        return socket.inet_aton(host) == bytes(4)
+    except OSError:
         return False
 
 
