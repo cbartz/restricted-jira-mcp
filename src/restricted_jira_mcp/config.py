@@ -102,11 +102,12 @@ def _http_config(section: Any) -> HTTPConfig:
 def _parse_bind_address(value: str) -> tuple[str, int]:
     """Split "host:port" (IPv6 hosts in brackets) into the bare host and port."""
     host, _, port = value.rpartition(":")
+    host = host.removeprefix("[").removesuffix("]")
     if not host or not port.isdigit() or not 1 <= int(port) <= 65535:
         raise ValueError(
             f"http.bind_address must be host:port with a port from 1 to 65535, got {value!r}"
         )
-    return host.removeprefix("[").removesuffix("]"), int(port)
+    return host, int(port)
 
 
 def _is_unspecified(host: str) -> bool:

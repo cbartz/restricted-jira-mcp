@@ -91,6 +91,10 @@ class TestLoadConfig(unittest.TestCase):
                 {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1")},
                 "bind_address",
             ),
+            "empty bracketed host": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="[]:8000")},
+                "bind_address",
+            ),
             "non-numeric port": (
                 {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:http")},
                 "bind_address",
