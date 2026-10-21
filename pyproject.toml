@@ -5,11 +5,15 @@ description = "A project-allowlisted Jira MCP server."
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",
-  "mcp>=1.0",
+  "mcp>=1.8,<2",
+  "markdown-it-py>=3",
 ]
 
 [project.optional-dependencies]
 test = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

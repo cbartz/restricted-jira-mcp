@@ -58,6 +58,59 @@ class JiraPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "NDA"):
             policy.validate_update_fields({"parent": {"key": "NDA-1"}})
 
+    # Test Task 4: Preserve ORDER BY when wrapping JQL
+    def test_wrap_jql_preserves_order_by(self):
+        """Test that ORDER BY clauses are preserved when wrapping JQL"""
+        policy = JiraPolicy.create(("ISD", "ABC"))
+        
+        with self.subTest("ORDER BY at end"):
+            self.assertEqual(
+                policy.wrap_jql("status = Done ORDER BY created ASC"),
+                "project in (ABC, ISD) AND (status = Done) ORDER BY created ASC",
+            )
+            
+        with self.subTest("ORDER BY inside quotes, no split"):
+            self.assertEqual(
+                policy.wrap_jql('summary ~ "please order by date"'),
+                "project in (ABC, ISD) AND (summary ~ \"please order by date\")",
+            )
+            
+        with self.subTest("ORDER BY after quoted occurrence"):
+            self.assertEqual(
+                policy.wrap_jql('text = "order by x" ORDER BY created'),
+                "project in (ABC, ISD) AND (text = \"order by x\") ORDER BY created",
+            )
+            
+        with self.subTest("Only ORDER BY, no body"):
+            self.assertEqual(
+                policy.wrap_jql("order by created"),
+                "project in (ABC, ISD) order by created",
+            )
+            
+        with self.subTest("ORDER BY with single quotes, lowercase"):
+            self.assertEqual(
+                policy.wrap_jql("status = 'open' order by key desc"),
+                "project in (ABC, ISD) AND (status = 'open') order by key desc",
+            )
+
+        with self.subTest("ORDER BY with double space"):
+            self.assertEqual(
+                policy.wrap_jql("status = Done ORDER  BY created"),
+                "project in (ABC, ISD) AND (status = Done) ORDER  BY created",
+            )
+
+        with self.subTest("escaped quote inside string, real ORDER BY after"):
+            self.assertEqual(
+                policy.wrap_jql('text ~ "a\\"b" ORDER BY created'),
+                'project in (ABC, ISD) AND (text ~ "a\\"b") ORDER BY created',
+            )
+
+        with self.subTest("quoted field name in ORDER BY clause"):
+            self.assertEqual(
+                policy.wrap_jql('status = Done ORDER BY "Order By Date"'),
+                'project in (ABC, ISD) AND (status = Done) ORDER BY "Order By Date"',
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

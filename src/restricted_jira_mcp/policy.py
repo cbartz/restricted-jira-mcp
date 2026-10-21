@@ -5,7 +5,73 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _split_order_by(jql: str) -> tuple[str, str | None]:
+    """
+    Split JQL at the last top-level ORDER BY clause (outside quotes).
+
+    Backslash escapes are tracked so a quote inside a string literal
+    (``text ~ "a\\"b"``) cannot desynchronise the quote state, and the clause
+    itself may contain quoted field names (``ORDER BY "Order By Date"``).
+
+    Args:
+        jql: The JQL string to split
+
+    Returns:
+        tuple: (body, order_clause) where order_clause is None if no ORDER BY found
+    """
+    if not jql:
+        return "", None
+
+    jql = jql.strip()
+    if not jql:
+        return "", None
+
+    positions = []
+    in_single_quote = False
+    in_double_quote = False
+    escaped = False
+    i = 0
+    while i < len(jql):
+        char = jql[i]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_double_quote:
+            if char == '"':
+                in_double_quote = False
+        elif in_single_quote:
+            if char == "'":
+                in_single_quote = False
+        elif char == '"':
+            in_double_quote = True
+        elif char == "'":
+            in_single_quote = True
+        else:
+            match = _ORDER_BY_RE.match(jql, i)
+            if (
+                match
+                and (i == 0 or jql[i - 1].isspace())
+                and (match.end() == len(jql) or jql[match.end()].isspace())
+            ):
+                positions.append(i)
+                i = match.end() - 1
+        i += 1
+
+    if not positions:
+        return jql, None
+
+    order_by_pos = positions[-1]
+    body = jql[:order_by_pos].rstrip()
+    order_clause = jql[order_by_pos:]
+    
+    return body, order_clause
+
+
 ISSUE_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)-\d+$")
+
+# The ORDER BY keyword, tolerating arbitrary whitespace between the words.
+_ORDER_BY_RE = re.compile(r"order\s+by", re.IGNORECASE)
 PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -82,7 +148,22 @@ class JiraPolicy:
         base = self.project_jql_clause()
         if not jql or not jql.strip():
             return base
-        return f"{base} AND ({jql.strip()})"
+        
+        body, order_clause = _split_order_by(jql)
+        
+        if order_clause is None:
+            # No ORDER BY clause, use current behavior
+            if not body:
+                return base
+            return f"{base} AND ({body})"
+        else:
+            # Has ORDER BY clause
+            if not body:
+                # Empty body, just return base + ORDER BY (with space)
+                return f"{base} {order_clause}"
+            else:
+                # Has both body and ORDER BY (with space before ORDER BY)
+                return f"{base} AND ({body}) {order_clause}"
 
     def validate_update_fields(self, fields: dict[str, Any]) -> dict[str, Any]:
         allowed = {

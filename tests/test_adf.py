@@ -1,0 +1,2004 @@
+import unittest
+from typing import Any
+
+from restricted_jira_mcp.adf import adf_to_text, as_adf, markdown_to_adf
+
+
+class TestAdfToText(unittest.TestCase):
+    def test_renders_paragraph_marks_and_lists(self):
+        doc = {
+            "type": "doc", 
+            "version": 1, 
+            "content": [
+                {
+                    "type": "paragraph", 
+                    "content": [
+                        {"type": "text", "text": "Line one"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "line two"},
+                    ],
+                },
+                {
+                    "type": "paragraph", 
+                    "content": [
+                        {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": " and "},
+                        {"type": "text", "text": "link", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                    ],
+                },
+                {
+                    "type": "bulletList", 
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                        {"type": "listItem", "content": [
+                            {"type": "paragraph", "content": [{"type": "text", "text": "b"}]},
+                            {"type": "bulletList", "content": [
+                                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b1"}]}]},
+                            ]},
+                        ]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = (
+            "Line one\nline two\n\n"
+            "**bold** and [link](https://x.y)\n\n"
+            "- a\n- b\n\n  - b1"
+        )
+        self.assertEqual(result, expected)
+
+    def test_renders_heading_levels(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Heading 1"}]},
+                {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Heading 3"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "# Heading 1\n\n### Heading 3"
+        self.assertEqual(result, expected)
+
+    def test_renders_ordered_list_with_order_attr(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "orderedList",
+                    "attrs": {"order": 2},
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item 2"}]}]},
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item 3"}]}]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "2. item 2\n3. item 3"
+        self.assertEqual(result, expected)
+
+    def test_renders_code_block_with_language(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": "python"},
+                    "content": [{"type": "text", "text": "print('hello')\n"}],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "```python\nprint('hello')\n\n```"
+        self.assertEqual(result, expected)
+
+    def test_renders_code_block_without_language(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "content": [{"type": "text", "text": "plain text\n"}],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "```\nplain text\n\n```"
+        self.assertEqual(result, expected)
+
+    def test_renders_blockquote(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "quoted text"}]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "> quoted text"
+        self.assertEqual(result, expected)
+
+    def test_renders_list_item_with_multiple_paragraphs(self):
+        # Each paragraph in a list item becomes its own indented line, so a
+        # read→update round trip keeps them as separate paragraphs.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "- first\n\n  second")
+
+    def test_renders_code_block_inside_list_item(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "item with code"}]},
+                                {"type": "codeBlock", "content": [{"type": "text", "text": "x = 1"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "- item with code\n\n  ```\n  x = 1\n  ```")
+
+    def test_renders_nested_list_under_wide_ordered_marker(self):
+        # Continuation and nested lines indent by the marker's width, so a
+        # "10. " item nests its children deeper than a "1. " item would.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "orderedList",
+                    "attrs": {"order": 10},
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {
+                                    "type": "bulletList",
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "10. first\n\n    - nested")
+
+    def test_renders_headerless_table_with_all_rows(self):
+        # A table without a header row keeps every row: the first row serves
+        # as the markdown header, because pipe tables require one.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "d"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "| a | b |\n| --- | --- |\n| c | d |")
+
+    def test_renders_table_with_multiple_header_rows(self):
+        # Rows marked as headers beyond the first are still rendered, as body
+        # rows, so no cell text is dropped.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "r1"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "r2"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "| r1 |\n| --- |\n| r2 |")
+
+    def test_renders_table(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "Header 1"}]},
+                                    ],
+                                },
+                                {
+                                    "type": "tableHeader",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "Header 2"}]},
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "Cell 1"}]},
+                                    ],
+                                },
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "Cell 2"}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "| Header 1 | Header 2 |\n| --- | --- |\n| Cell 1 | Cell 2 |"
+        self.assertEqual(result, expected)
+
+    def test_returns_none_for_falsy_input(self):
+        self.assertIsNone(adf_to_text(None))
+        self.assertIsNone(adf_to_text(""))
+
+    def test_bare_string_passthrough(self):
+        result = adf_to_text("hello world")
+        self.assertEqual(result, "hello world")
+
+    def test_long_content_returns_full_length(self):
+        long_text = "a" * 1000
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": long_text}]}
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, long_text)
+
+    def test_unknown_nodes_render_descendant_text_without_raising(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "panel",
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": "note"}]
+                        }
+                    ]
+                },
+                {
+                    "type": "mention",
+                    "attrs": {"id": "123"},
+                    "content": [{"type": "text", "text": "@user"}]
+                }
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "note\n\n@user")
+
+    def test_unknown_container_keeps_block_order_and_separation(self):
+        # A panel (unknown block container) between two paragraphs must render its
+        # child blocks structurally, in document order, joined like sibling blocks.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Intro"}]},
+                {
+                    "type": "panel",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "panel-first"}]},
+                        {"type": "paragraph", "content": [{"type": "text", "text": "panel-second"}]},
+                        {
+                            "type": "bulletList",
+                            "content": [
+                                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step one"}]}]},
+                                {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step two"}]}]},
+                            ],
+                        },
+                    ],
+                },
+                {"type": "paragraph", "content": [{"type": "text", "text": "Outro"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "Intro\n\npanel-first\n\npanel-second\n\n- step one\n- step two\n\nOutro"
+        self.assertEqual(result, expected)
+
+    def test_unknown_container_nested_in_unknown_container_stays_structural(self):
+        # An expand inside a panel must also render block-aware: nested unknown
+        # containers may not fall back to jamming their paragraphs together.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Intro"}]},
+                {
+                    "type": "panel",
+                    "content": [
+                        {
+                            "type": "expand",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "e1"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "e2"}]},
+                            ],
+                        },
+                    ],
+                },
+                {"type": "paragraph", "content": [{"type": "text", "text": "Outro"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "Intro\n\ne1\n\ne2\n\nOutro"
+        self.assertEqual(result, expected)
+
+    def test_renders_multi_paragraph_blockquote_with_prefix_on_every_line(self):
+        # Each line of a blockquote keeps the "> " prefix; blank separators read ">".
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                        {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "> first\n>\n> second"
+        self.assertEqual(result, expected)
+
+    def test_renders_table_cell_with_multiple_paragraphs_space_joined(self):
+        # A cell holding two paragraphs must not jam their texts together.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Header"}]}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "a"}]},
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "b"}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "| Header |\n| --- |\n| a b |"
+        self.assertEqual(result, expected)
+
+    def test_paragraph_with_em_and_code_marks(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "italic", "marks": [{"type": "em"}]},
+                        {"type": "text", "text": " and "},
+                        {"type": "text", "text": "code", "marks": [{"type": "code"}]},
+                        {"type": "text", "text": " text"},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "*italic* and `code` text"
+        self.assertEqual(result, expected)
+
+    def test_paragraph_with_strike_mark(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "deleted", "marks": [{"type": "strike"}]},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        expected = "~~deleted~~"
+        self.assertEqual(result, expected)
+
+    def test_nested_lists_with_indentation(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "top level"}]},
+                                {
+                                    "type": "orderedList",
+                                    "content": [
+                                        {
+                                            "type": "listItem",
+                                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested 1"}]}],
+                                        },
+                                        {
+                                            "type": "listItem",
+                                            "content": [
+                                                {"type": "paragraph", "content": [{"type": "text", "text": "nested 2"}]},
+                                                {
+                                                    "type": "bulletList",
+                                                    "content": [
+                                                        {
+                                                            "type": "listItem",
+                                                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "deep nested"}]}],
+                                                        },
+                                                    ],
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        # Continuation and nested lines indent by their marker's width: the
+        # outer "- " adds two spaces, the inner "2. " adds three.
+        expected = "- top level\n\n  1. nested 1\n  2. nested 2\n\n     - deep nested"
+        self.assertEqual(result, expected)
+
+
+    def test_escapes_markdown_metacharacters_in_plain_text(self):
+        # Literal ADF text must survive a read→update round trip: characters
+        # that markdown would treat as structure get backslash-escaped.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "*literal*"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "# not a heading"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "- not a list"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "1. not numbered"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "a | b"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(
+            result,
+            "\\*literal\\*\n\n\\# not a heading\n\n\\- not a list\n\n1\\. not numbered\n\na \\| b",
+        )
+
+    def test_leaves_intraword_underscores_readable(self):
+        # CommonMark leaves intraword underscores literal, so snake_case need
+        # no escaping; a boundary underscore does.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "snake_case and _emphasized_"}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "snake_case and \\_emphasized\\_")
+
+    def test_escapes_after_hard_break(self):
+        # A line after a hard break starts a new markdown line, so its leading
+        # "-" would become a list item on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "- second"},
+                    ],
+                },
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "first\n\\- second")
+
+    def test_code_mark_with_backticks_round_trips(self):
+        # Inline code containing backticks needs a longer code span; its
+        # content stays literal (backslash escapes do not exist inside spans).
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "run `cmd`", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        result = adf_to_text(doc)
+        self.assertEqual(result, "`` run `cmd` ``")
+
+    def test_round_trips_through_markdown_conversion(self):
+        # The lossless contract: adf → markdown text → adf reproduces the
+        # original document exactly for the supported structures.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Plan"}]},
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Do it "},
+                        {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": ", see "},
+                        {"type": "text", "text": "docs", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                        {"type": "text", "text": "*carefully*"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "- not a list"},
+                    ],
+                },
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "step"}]}]},
+                    ],
+                },
+                {"type": "blockquote", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]}]},
+                {"type": "codeBlock", "attrs": {"language": "python"}, "content": [{"type": "text", "text": "if x:\n    run()"}]},
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a | b"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(markdown_to_adf(adf_to_text(doc)), doc)
+
+
+    def test_code_block_content_stays_literal(self):
+        # Fenced markdown keeps code literal: punctuation inside a code block
+        # must not be backslash-escaped, or a read→update round trip corrupts it.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "values[0] < 3 && f(*args)"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "```\nvalues[0] < 3 && f(*args)\n```")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_code_block_round_trips_trailing_newline(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "x = 1\n"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        # The blank line keeps the trailing newline: the write path strips
+        # exactly one fence-content newline.
+        self.assertEqual(text, "```\nx = 1\n\n```")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_code_block_with_embedded_backticks_round_trips(self):
+        # A fence must outlive the longest backtick run in the content, or the
+        # content itself would close it early.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "has ```` run and `tick`"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "`````\nhas ```` run and `tick`\n`````")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+
+    def test_list_item_paragraphs_round_trip(self):
+        # Sibling blocks inside a list item need a blank separator; without it
+        # CommonMark reads the continuation as the same paragraph (lazy
+        # continuation) and a write-back turns the boundary into a hard break.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- first\n\n  second")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_nested_list_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "top"}]},
+                                {
+                                    "type": "orderedList",
+                                    "attrs": {"order": 1},
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "nested"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- top\n\n  1. nested")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_rule_as_horizontal_rule(self):
+        # `---` converts to an ADF rule on write; the read side must render it
+        # back, or a created rule silently disappears on the next update.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "above"}]},
+                {"type": "rule"},
+                {"type": "paragraph", "content": [{"type": "text", "text": "below"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "above\n\n---\n\nbelow")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_rule_inside_blockquote(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]},
+                        {"type": "rule"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "> quoted\n>\n> ---")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+
+    def test_flattens_cell_line_breaks_to_spaces(self):
+        # Pipe-table rows cannot contain newlines, so a hard break inside a
+        # cell flattens to a space — the row itself must stay intact.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {
+                                            "type": "paragraph",
+                                            "content": [
+                                                {"type": "text", "text": "a"},
+                                                {"type": "hardBreak"},
+                                                {"type": "text", "text": "b"},
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |\n| --- |\n| a b |")
+        reparsed = markdown_to_adf(text)
+        cell = reparsed["content"][0]["content"][1]["content"][0]
+        self.assertEqual(cell["type"], "tableCell")
+        self.assertEqual(cell["content"][0]["content"][0]["text"], "a b")
+
+    def test_escapes_indented_list_markers(self):
+        # CommonMark recognizes list markers after up to three leading spaces,
+        # so indentation alone does not make a "- " literal.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "  - not a list"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": " 1. not numbered"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "  \\- not a list\n\n 1\\. not numbered")
+        # Round trip: still paragraphs (no list invented); CommonMark strips a
+        # paragraph's leading spaces on parse, which is inherent to markdown.
+        reparsed = markdown_to_adf(text)
+        self.assertEqual([b["type"] for b in reparsed["content"]], ["paragraph", "paragraph"])
+        self.assertEqual(
+            [b["content"][0]["text"] for b in reparsed["content"]],
+            ["- not a list", "1. not numbered"],
+        )
+
+
+    def test_marked_boundary_whitespace_moves_outside_delimiters(self):
+        # `**bold **text` does not close the emphasis in CommonMark, so the
+        # trailing space of a marked node must move outside the delimiters.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "bold ", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "text"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**bold** text")
+        reparsed = markdown_to_adf(text)
+        paragraph = reparsed["content"][0]
+        self.assertTrue(any(m.get("type") == "strong" for m in paragraph["content"][0].get("marks", [])))
+        self.assertEqual("".join(n.get("text", "") for n in paragraph["content"]), "bold text")
+
+    def test_marked_node_of_only_whitespace_stays_text(self):
+        # A whitespace-only marked node cannot carry delimiters; the whitespace
+        # itself must survive.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": "  ", "marks": [{"type": "em"}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "a  b")
+        # Markdown cannot express emphasis on whitespace alone: the text
+        # survives, the mark does not.
+        reparsed_node = markdown_to_adf(text)["content"][0]["content"][0]
+        self.assertEqual(reparsed_node.get("text"), "a  b")
+        self.assertNotIn("marks", reparsed_node)
+
+    def test_escapes_link_destination_parentheses(self):
+        # An unescaped `)` inside the destination closes it early and rewrites
+        # both the URL and the surrounding text.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "label", "marks": [{"type": "link", "attrs": {"href": "https://example.com/a)b"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[label](<https://example.com/a)b>)")
+        reparsed = markdown_to_adf(text)
+        text_node = reparsed["content"][0]["content"][0]
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://example.com/a)b"}}])
+
+    def test_renders_inline_card_url_from_attrs(self):
+        # Jira smart links carry their URL in attrs.url with no content nodes;
+        # dropping them silently loses the link on read→update.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://x.y/page"}}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[https://x.y/page](https://x.y/page)")
+        reparsed = markdown_to_adf(text)
+        text_node = reparsed["content"][0]["content"][0]
+        self.assertEqual(text_node["text"], "https://x.y/page")
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://x.y/page"}}])
+
+
+    def test_renders_block_card_url(self):
+        # A blockCard stores its link in attrs.url with no content children;
+        # dropping it would delete the link on a read→update round trip.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "blockCard", "attrs": {"url": "https://x.y/page"}},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[https://x.y/page](https://x.y/page)")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "https://x.y/page")
+
+    def test_renders_status_emoji_and_date_nodes(self):
+        # Attribute-only inline nodes carry their value in attrs; a status
+        # labelled "Blocked" must not read as empty.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "status", "attrs": {"text": "Blocked", "color": "neutral"}},
+                        {"type": "text", "text": " "},
+                        {"type": "emoji", "attrs": {"shortName": ":smile:", "text": "😀"}},
+                        {"type": "text", "text": " due "},
+                        {"type": "date", "attrs": {"timestamp": "1575799606000"}},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "Blocked 😀 due 2019-12-08")
+
+    def test_escapes_entity_references_in_text(self):
+        # HTML entities decode on write-back: literal "&amp;" would become "&".
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "R&amp;D and &copy;"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "plain R&D stays readable"}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "R\\&amp;D and \\&copy;\n\nplain R&D stays readable")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "R&amp;D and &copy;")
+
+    def test_escapes_setext_underline_after_hard_break(self):
+        # "first\n===" would become a setext heading on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "==="},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "first\n\\===")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "first")
+
+
+    def test_code_mark_keeps_boundary_whitespace(self):
+        # The spaces in code content are significant: trimming them out of the
+        # span would change the code on write-back.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": " x ", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        # CommonMark strips one boundary space from a span, so the renderer
+        # pads with one on each side to preserve the content's own spaces.
+        self.assertEqual(text, "`  x  `")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], " x ")
+
+    def test_whitespace_only_code_span_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": " ", "marks": [{"type": "code"}]}]},
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "` `")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], " ")
+
+    def test_escapes_pipes_inside_cell_code_spans(self):
+        # The pipe-table parser splits on pipes even inside code spans; the
+        # cell-level escape reaches them before inline parsing.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {"type": "tableRow", "content": [{"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]}]},
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableCell",
+                                    "content": [
+                                        {"type": "paragraph", "content": [{"type": "text", "text": "a|b", "marks": [{"type": "code"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |\n| --- |\n| `a\\|b` |")
+        reparsed = markdown_to_adf(text)
+        cell = reparsed["content"][0]["content"][1]["content"][0]
+        self.assertEqual(cell["content"][0]["content"][0]["text"], "a|b")
+        self.assertEqual(cell["content"][0]["content"][0]["marks"], [{"type": "code"}])
+
+    def test_escapes_link_destination_with_ampersand(self):
+        # An entity lookalike in a destination decodes on write-back and
+        # rewrites the URL.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "q", "marks": [{"type": "link", "attrs": {"href": "https://e.com/?q=&copy;"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "[q](https://e.com/?q=\\&copy;)")
+        reparsed = markdown_to_adf(text)
+        self.assertEqual(reparsed["content"][0]["content"][0]["marks"], [{"type": "link", "attrs": {"href": "https://e.com/?q=&copy;"}}])
+
+    def test_link_destination_with_backslash_normalizes(self):
+        # markdown-it percent-encodes a backslash in any destination, so a
+        # literal backslash cannot round trip byte-for-byte; pin the
+        # normalization so it is at least deliberate.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "p", "marks": [{"type": "link", "attrs": {"href": "https://e.com/a\\b"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        reparsed = markdown_to_adf(text)
+        href = reparsed["content"][0]["content"][0]["marks"][0]["attrs"]["href"]
+        self.assertEqual(href, "https://e.com/a%5Cb")
+
+
+    def test_escapes_indented_setext_underline(self):
+        # Up to three leading spaces still form a setext underline.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "  ==="},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "first\n  \\===")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "first")
+
+    def test_preserves_link_titles(self):
+        # The write converter keeps link titles; the read side must too, or an
+        # update strips titles from links this server itself created.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "a",
+                            "marks": [{"type": "link", "attrs": {"href": "https://x.y", "title": 'The "T" \\ doc'}}],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, '[a](https://x.y "The \\"T\\" \\\\ doc")')
+        reparsed = markdown_to_adf(text)
+        marks = reparsed["content"][0]["content"][0]["marks"]
+        self.assertEqual(marks, [{"type": "link", "attrs": {"href": "https://x.y", "title": 'The "T" \\ doc'}}])
+
+    def test_pads_ragged_table_rows_to_rectangular(self):
+        # A merged header (colspan 2) renders one cell where the body has two;
+        # markdown sizes the table by the header, so the second body cell
+        # would be dropped. Pad every row to the widest row.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "attrs": {"colspan": 2},
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c1"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c2"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "| H |  |\n| --- | --- |\n| c1 | c2 |")
+        reparsed = markdown_to_adf(text)
+        rows = reparsed["content"][0]["content"]
+        body_cells = rows[1]["content"]
+        self.assertEqual([c["content"][0]["content"][0]["text"] for c in body_cells], ["c1", "c2"])
+
+
+    def test_list_item_first_block_continuation_lines_stay_indented(self):
+        # A hard break inside the item's FIRST paragraph must not push its
+        # continuation lines out of the list item.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [
+                                        {"type": "text", "text": "first"},
+                                        {"type": "hardBreak"},
+                                        {"type": "text", "text": "second"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- first\n  second")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(len(item["content"]), 1)
+        self.assertEqual(item["content"][0]["type"], "paragraph")
+        self.assertEqual(
+            [n["type"] for n in item["content"][0]["content"]],
+            ["text", "hardBreak", "text"],
+        )
+
+    def test_consecutive_hard_breaks_round_trip(self):
+        # "\n\n" from two breaks would re-parse as a paragraph boundary; a
+        # break on an empty line needs its backslash.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "hardBreak"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # The first break is a plain newline (our softbreak→hardBreak rule
+        # keeps it), the second sits on an empty line and carries its
+        # backslash so it is not read as a paragraph boundary.
+        self.assertEqual(text, "a\n\\\nb")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_leading_hard_break_round_trips(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "\\\nb")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_marked_trailing_punctuation_shifts_out_of_delimiters(self):
+        # "**Label:**value" cannot close the emphasis (punctuation before a
+        # word character); shifting the colon out keeps text and mark.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Label:", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "value"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**Label**:value")
+        reparsed = markdown_to_adf(text)
+        paragraph = reparsed["content"][0]["content"]
+        self.assertEqual(paragraph[0].get("marks"), [{"type": "strong"}])
+        self.assertEqual(paragraph[0]["text"], "Label")
+        self.assertEqual(paragraph[1]["text"], ":value")
+
+    def test_marked_leading_punctuation_after_word_drops_mark(self):
+        # "Done**!**" cannot open the emphasis either; the honest fallback is
+        # plain text — never literal asterisks.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Done"},
+                        {"type": "text", "text": "!", "marks": [{"type": "strong"}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "Done!")
+        reparsed = markdown_to_adf(text)
+        self.assertEqual(reparsed["content"][0]["content"][0].get("marks", []), [])
+        self.assertEqual(reparsed["content"][0]["content"][0]["text"], "Done!")
+
+    def test_converts_list_item_headings_to_paragraphs(self):
+        # ADF list items must start with a paragraph and reject heading
+        # children; "- # Heading" would hand Jira an invalid document.
+        adf = markdown_to_adf("- # Heading\n- plain")
+        first_item = adf["content"][0]["content"][0]
+        self.assertEqual(first_item["content"][0]["type"], "paragraph")
+        self.assertEqual(first_item["content"][0]["content"][0]["text"], "Heading")
+        second_item = adf["content"][0]["content"][1]
+        self.assertEqual(second_item["content"][0]["type"], "paragraph")
+
+    def test_linked_image_keeps_single_link_mark(self):
+        adf = markdown_to_adf("[![badge](https://img/x.png)](https://target/)")
+        text_node = adf["content"][0]["content"][0]
+        link_marks = [m for m in text_node.get("marks", []) if m["type"] == "link"]
+        self.assertEqual(len(link_marks), 1)
+        self.assertEqual(link_marks[0]["attrs"]["href"], "https://target/")
+        self.assertEqual(text_node["text"], "badge")
+
+    def test_nested_same_emphasis_mark_is_not_duplicated(self):
+        adf = markdown_to_adf("**outer __inner__**")
+        for node in adf["content"][0]["content"]:
+            marks = node.get("marks", [])
+            strong_count = sum(1 for m in marks if m["type"] == "strong")
+            self.assertLessEqual(strong_count, 1)
+
+
+    def test_link_marks_survive_punctuation_boundaries(self):
+        # Links have no flanking restrictions: a link must survive where
+        # emphasis cannot bind, and combined marks keep full extents.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "build"},
+                        {"type": "text", "text": "#123", "marks": [{"type": "link", "attrs": {"href": "https://x/y"}}]},
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Done"},
+                        {"type": "text", "text": "!", "marks": [{"type": "link", "attrs": {"href": "https://x/y"}}]},
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Label:",
+                            "marks": [
+                                {"type": "link", "attrs": {"href": "https://x/y"}},
+                                {"type": "strong"},
+                            ],
+                        },
+                        {"type": "text", "text": "value"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # The label keeps its text escaping (harmless inside brackets).
+        self.assertEqual(
+            text,
+            "build[\\#123](https://x/y)\n\nDone[!](https://x/y)\n\n[**Label:**](https://x/y)value",
+        )
+        reparsed = markdown_to_adf(text)
+        second = reparsed["content"][1]["content"][1]
+        self.assertEqual(second.get("marks"), [{"type": "link", "attrs": {"href": "https://x/y"}}])
+        third = reparsed["content"][2]["content"][0]
+        self.assertEqual(
+            third.get("marks"),
+            [
+                {"type": "link", "attrs": {"href": "https://x/y"}},
+                {"type": "strong"},
+            ],
+        )
+        self.assertEqual(third["text"], "Label:")
+
+
+    def test_renders_item_with_leading_empty_paragraph_and_nested_list(self):
+        # An item whose first paragraph is empty keeps its marker as a
+        # placeholder line; a blank line here would split the list.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": []},
+                                {
+                                    "type": "bulletList",
+                                    "content": [
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- \n  - a\n  - b")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_renders_empty_list_item_with_marker(self):
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": []}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "-")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(item["content"], [{"type": "paragraph", "content": []}])
+
+    def test_drops_leading_empty_paragraph_before_paragraph_sibling(self):
+        # An empty leading paragraph before a paragraph sibling cannot round
+        # trip through markdown; dropping it keeps the item and its text.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": []},
+                                {"type": "paragraph", "content": [{"type": "text", "text": "second"}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "- second")
+        reparsed = markdown_to_adf(text)
+        item = reparsed["content"][0]["content"][0]
+        self.assertEqual(len(item["content"]), 1)
+        self.assertEqual(item["content"][0]["content"][0]["text"], "second")
+
+
+
+    def test_linked_code_span_keeps_boundary_spaces_without_duplication(self):
+        # The code span already carries the run's boundary whitespace inside
+        # itself; adding lead/trail again would duplicate it.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": " x ", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}, {"type": "code"}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        # CommonMark strips one span-boundary space per side, so the renderer
+        # doubles them to keep the code's own spaces.
+        self.assertEqual(text, "a[`  x  `](https://x.y)b")
+        reparsed = markdown_to_adf(text)
+        node = reparsed["content"][0]["content"][1]
+        self.assertEqual(node["text"], " x ")
+        self.assertEqual(
+            node["marks"],
+            [{"type": "link", "attrs": {"href": "https://x.y"}}, {"type": "code"}],
+        )
+
+
+    def test_whitespace_only_link_label_keeps_its_spaces(self):
+        # An empty label would make the write converter insert the URL; the
+        # whitespace itself must stay inside the brackets.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "a"},
+                        {"type": "text", "text": " ", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                        {"type": "text", "text": "b"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "a[ ](https://x.y)b")
+        reparsed = markdown_to_adf(text)
+        node = reparsed["content"][0]["content"][1]
+        self.assertEqual(node["text"], " ")
+        self.assertEqual(node["marks"], [{"type": "link", "attrs": {"href": "https://x.y"}}])
+
+
+    def test_exclamation_before_generated_link_stays_literal(self):
+        # "See!" followed by a separate linked node renders "See![docs](url)",
+        # which CommonMark reads as an image; the "!" must be escaped across
+        # the run boundary.
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "See!"},
+                        {"type": "text", "text": "docs", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "See\\![docs](https://x.y)")
+        self.assertEqual(markdown_to_adf(text), doc)
+
+    def test_shifted_ampersand_cannot_form_an_entity(self):
+        # Shifting "&" out of the delimiters must not leave it next to the
+        # following run's text ("**R&**" + "copy;" → "**R**&copy;").
+        doc = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "R&", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "copy;"},
+                    ],
+                },
+            ],
+        }
+        text = adf_to_text(doc)
+        self.assertEqual(text, "**R**\\&copy;")
+        self.assertEqual(markdown_to_adf(text)["content"][0]["content"][0]["text"], "R")
+
+
+class TestMarkdownToAdf(unittest.TestCase):
+    # Blockquotes normalize their children like list items do, except rules
+    # (which blockquotes support): headings flatten, nested quotes lift,
+    # tables degrade to cell text, and an empty quote gains an empty paragraph.
+    def test_normalizes_blockquote_children_for_adf(self):
+        adf = markdown_to_adf("> # Title\n> > note\n> ---\n> done\n>\n> | a |\n> | --- |\n> | 1 |")
+        children = adf["content"][0]["content"]
+        self.assertEqual(children[0], {"type": "paragraph", "content": [{"type": "text", "text": "Title"}]})
+        self.assertEqual(children[1], {"type": "paragraph", "content": [{"type": "text", "text": "note"}]})
+        self.assertEqual(children[2], {"type": "rule"})
+        self.assertEqual(children[3], {"type": "paragraph", "content": [{"type": "text", "text": "done"}]})
+        self.assertEqual(children[4], {"type": "paragraph", "content": [{"type": "text", "text": "a | 1"}]})
+
+    def test_empty_blockquote_gets_empty_paragraph(self):
+        adf = markdown_to_adf(">")
+        self.assertEqual(adf["content"], [{"type": "blockquote", "content": [{"type": "paragraph", "content": []}]}])
+
+    def test_degrades_all_empty_table_in_list_item_to_empty_paragraph(self):
+        adf = markdown_to_adf("- t\n  | | |\n  | --- | --- |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1], {"type": "paragraph", "content": []})
+
+    # ADF list items must start with a paragraph, need a child even when the
+    # markdown item is empty, and reject heading/rule/blockquote/table
+    # children; each normalizes to a form Jira accepts without losing text.
+    def test_normalizes_list_item_children_for_adf(self):
+        adf = markdown_to_adf("-\n- - nested\n- item\n\n  ---\n- quoted\n  > inner\n- tbl\n  | a |\n  | --- |\n  | 1 |")
+        items = adf["content"][0]["content"]
+        # Empty item gains an empty paragraph.
+        self.assertEqual(items[0]["content"], [{"type": "paragraph", "content": []}])
+        # An item starting with a nested list gains a leading empty paragraph.
+        self.assertEqual(items[1]["content"][0], {"type": "paragraph", "content": []})
+        self.assertEqual(items[1]["content"][1]["type"], "bulletList")
+        # A rule inside an item degrades to its text.
+        third = items[2]
+        self.assertEqual(third["content"][-1], {"type": "paragraph", "content": [{"type": "text", "text": "---"}]})
+        # A blockquote inside an item lifts to its own paragraphs.
+        fourth = items[3]
+        self.assertEqual(fourth["content"][1]["type"], "paragraph")
+        self.assertEqual(fourth["content"][1]["content"][0]["text"], "inner")
+        # A table inside an item degrades to one paragraph of its cell text,
+        # traversing sections → rows → cells.
+        fifth = items[4]
+        self.assertEqual(fifth["content"][1]["type"], "paragraph")
+        self.assertEqual(fifth["content"][1]["content"][0]["text"], "a | 1")
+
+    def test_flattens_multi_cell_table_in_list_item(self):
+        # Row-wise traversal would glue each row's cells together ("ab | 12");
+        # the cell texts must stay individual.
+        adf = markdown_to_adf("- t\n  | a | b |\n  | --- | --- |\n  | 1 | 2 |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1]["content"][0]["text"], "a | b | 1 | 2")
+
+    def test_normalizes_nested_blockquotes_in_list_items(self):
+        adf = markdown_to_adf("- item\n  > > quoted")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual([c["type"] for c in item["content"]], ["paragraph", "paragraph"])
+        self.assertEqual(item["content"][1]["content"][0]["text"], "quoted")
+
+    def test_normalizes_quoted_table_in_list_items(self):
+        adf = markdown_to_adf("- q\n  > | a |\n  > | --- |\n  > | 1 |")
+        item = adf["content"][0]["content"][0]
+        self.assertEqual(item["content"][1]["type"], "paragraph")
+        self.assertEqual(item["content"][1]["content"][0]["text"], "a | 1")
+
+    # Markdown's empty table cells must become cells holding an empty
+    # paragraph: an empty cell content list is invalid ADF.
+    def test_empty_markdown_cell_gets_empty_paragraph(self):
+        adf = markdown_to_adf("| a |  |\n| --- | --- |\n| 1 | 2 |")
+        header_cells = adf["content"][0]["content"][0]["content"]
+        self.assertEqual(header_cells[1], {"type": "tableHeader", "content": [{"type": "paragraph", "content": []}]})
+
+    # Inline code keeps only marks ADF allows alongside code (link); anything
+    # else (strong, em, strike) would make the document invalid for Jira.
+    def test_code_inline_drops_incompatible_inherited_marks(self):
+        adf = markdown_to_adf("**`value`**")
+        text_node = adf["content"][0]["content"][0]
+        self.assertEqual(text_node["marks"], [{"type": "code"}])
+        self.assertEqual(text_node["text"], "value")
+
+    def test_code_inline_keeps_link_mark(self):
+        adf = markdown_to_adf("[`x`](https://y.z)")
+        text_node = adf["content"][0]["content"][0]
+        self.assertEqual(
+            text_node["marks"],
+            [{"type": "link", "attrs": {"href": "https://y.z"}}, {"type": "code"}],
+        )
+    # Pinned mapping: root → doc shell {"type": "doc", "version": 1, "content": [...]},
+    # heading → heading with attrs.level taken from the h-tag, paragraph → paragraph,
+    # and blank lines separating markdown blocks become separate ADF blocks.
+    def test_converts_headings_and_paragraphs_split_on_blank_lines(self):
+        result = markdown_to_adf("# Title\n\nBody paragraph.\n\n### Details\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Title"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Body paragraph."}]},
+                {"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Details"}]},
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: bullet_list → bulletList, list_item → listItem wrapping its
+    # child blocks (each item's text becomes a paragraph).
+    def test_converts_bullet_list(self):
+        result = markdown_to_adf("- a\n- b\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: ordered_list → orderedList with attrs.order = the token's
+    # start value (default 1); list_item → listItem wrapping child blocks.
+    def test_converts_ordered_list_with_start_attr(self):
+        result = markdown_to_adf("5. a\n6. b\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "orderedList",
+                    "attrs": {"order": 5},
+                    "content": [
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                        {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+        default = markdown_to_adf("1. a\n2. b\n")
+        self.assertEqual(default["content"][0]["attrs"], {"order": 1})
+
+    # Pinned mapping: fence → codeBlock with attrs.language from the fence info
+    # string and the code text minus its trailing newline.
+    def test_converts_fenced_code_block_with_language(self):
+        result = markdown_to_adf("```python\nprint('hi')\n```\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": "python"},
+                    "content": [{"type": "text", "text": "print('hi')"}],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: fence without an info string and indented code_block both
+    # become codeBlock with the language attrs omitted entirely.
+    def test_converts_code_block_without_language(self):
+        result = markdown_to_adf("```\nplain text\n```\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "plain text"}]},
+            ],
+        }
+        self.assertEqual(result, expected)
+        indented = markdown_to_adf("    indented code\n")
+        self.assertEqual(
+            indented["content"],
+            [{"type": "codeBlock", "content": [{"type": "text", "text": "indented code"}]}],
+        )
+
+    # Pinned mapping: em/strong/code_inline/s inline nodes become em/strong/code/
+    # strike marks on text nodes.
+    def test_converts_inline_marks(self):
+        result = markdown_to_adf("*em* **strong** `code` ~~gone~~\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "em", "marks": [{"type": "em"}]},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "strong", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "code", "marks": [{"type": "code"}]},
+                        {"type": "text", "text": " "},
+                        {"type": "text", "text": "gone", "marks": [{"type": "strike"}]},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: [text](url) → text node carrying a link mark with
+    # attrs.href (plus attrs.title when the markdown link has a title).
+    def test_converts_link_mark(self):
+        result = markdown_to_adf("[Jira](https://x.y)\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Jira", "marks": [{"type": "link", "attrs": {"href": "https://x.y"}}]}
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+        titled = markdown_to_adf('[a](x "T")\n')
+        self.assertEqual(
+            titled["content"][0]["content"],
+            [{"type": "text", "text": "a", "marks": [{"type": "link", "attrs": {"href": "x", "title": "T"}}]}],
+        )
+
+    # Pinned mapping: hardbreak (two trailing spaces) AND softbreak (single
+    # newline) both become hardBreak nodes — line breaks are preserved, not merged.
+    def test_converts_hard_break_and_soft_break(self):
+        result = markdown_to_adf("one  \ntwo\nthree\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "one"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "two"},
+                        {"type": "hardBreak"},
+                        {"type": "text", "text": "three"},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: table → table of tableRows; thead/tbody/tr wrappers are
+    # flattened; th → tableHeader and td → tableCell, each holding its paragraphs.
+    def test_converts_pipe_table(self):
+        result = markdown_to_adf("| Name | Value |\n| --- | --- |\n| a | 1 |\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "table",
+                    "content": [
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {
+                                    "type": "tableHeader",
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Name"}]}],
+                                },
+                                {
+                                    "type": "tableHeader",
+                                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Value"}]}],
+                                },
+                            ],
+                        },
+                        {
+                            "type": "tableRow",
+                            "content": [
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "1"}]}]},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: blockquote → blockquote wrapping its child blocks.
+    def test_converts_blockquote(self):
+        result = markdown_to_adf("> quoted text\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "quoted text"}]}],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: hr → rule node.
+    def test_converts_horizontal_rule(self):
+        result = markdown_to_adf("---\n")
+        expected = {"type": "doc", "version": 1, "content": [{"type": "rule"}]}
+        self.assertEqual(result, expected)
+
+    # Pinned mapping: image → text node with the alt text plus a link mark to
+    # src (ADF media needs upload; images degrade to links).
+    def test_converts_image_to_linked_alt_text(self):
+        result = markdown_to_adf("![alt](https://img/x.png)\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "alt", "marks": [{"type": "link", "attrs": {"href": "https://img/x.png"}}]}
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+    # Marks accumulate down nested inline containers: emphasized text inside
+    # bold text carries both the strong and em marks on one text node.
+    def test_nested_emphasis_accumulates_marks(self):
+        result = markdown_to_adf("**bold *deep***\n")
+        expected = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "bold ", "marks": [{"type": "strong"}]},
+                        {"type": "text", "text": "deep", "marks": [{"type": "strong"}, {"type": "em"}]},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(result, expected)
+
+
+class TestAsAdf(unittest.TestCase):
+    # as_adf passes a valid ADF doc (type "doc" with list content) through
+    # unchanged.
+    def test_passes_through_valid_adf_doc(self):
+        doc = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": []}]}
+        self.assertIs(as_adf(doc), doc)
+
+    # as_adf converts a markdown string via markdown_to_adf.
+    def test_converts_markdown_string(self):
+        self.assertEqual(as_adf("## Hi\n"), markdown_to_adf("## Hi\n"))
+
+    # as_adf rejects anything that is neither a markdown string nor an ADF doc
+    # (non-doc dicts, lists, ints) with a ValueError naming both accepted shapes.
+    def test_rejects_non_markdown_non_doc_values(self):
+        for value in ({"type": "paragraph"}, [], 42):
+            with self.assertRaises(ValueError) as ctx:
+                as_adf(value)
+            self.assertIn("Markdown string or an ADF doc object", str(ctx.exception))
+
+    # as_adf of an empty markdown string yields an empty ADF doc.
+    def test_empty_string_returns_empty_doc(self):
+        self.assertEqual(as_adf(""), {"type": "doc", "version": 1, "content": []})
+
+    # An empty fenced code block yields a codeBlock with an empty content list,
+    # because ADF rejects empty text nodes.
+    def test_empty_fence_yields_code_block_without_text_node(self):
+        adf = markdown_to_adf("```\n```")
+        code_block = adf["content"][0]
+        self.assertEqual(code_block["type"], "codeBlock")
+        self.assertEqual(code_block["content"], [])
+
+    # An image with empty alt text degrades to a link labelled with the URL,
+    # because an empty text node would be invalid ADF.
+    def test_image_with_empty_alt_uses_url_as_label(self):
+        adf = markdown_to_adf("![](https://img/x.png)")
+        paragraph = adf["content"][0]
+        self.assertEqual(len(paragraph["content"]), 1)
+        text_node = paragraph["content"][0]
+        self.assertEqual(text_node["text"], "https://img/x.png")
+        self.assertEqual(text_node["marks"], [{"type": "link", "attrs": {"href": "https://img/x.png"}}])
+
+    # A link with empty text keeps its target as the link's text.
+    def test_link_with_empty_text_uses_url_as_label(self):
+        adf = markdown_to_adf("see [](https://x.y) now")
+        paragraph = adf["content"][0]
+        texts = [node["text"] for node in paragraph["content"]]
+        self.assertEqual(texts, ["see ", "https://x.y", " now"])
+        self.assertEqual(
+            paragraph["content"][1]["marks"],
+            [{"type": "link", "attrs": {"href": "https://x.y"}}],
+        )
