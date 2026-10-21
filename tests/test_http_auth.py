@@ -1,17 +1,13 @@
 import asyncio
 import hashlib
-import tempfile
 import unittest
-from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from restricted_jira_mcp.http_auth import BearerAuthMiddleware, load_client_token_hashes
+from restricted_jira_mcp.http_auth import BearerAuthMiddleware
 
 CLIENT_TOKEN = "client-token-1"
 OTHER_CLIENT_TOKEN = "client-token-2"
-CLIENT_TOKEN_HASH = hashlib.sha256(CLIENT_TOKEN.encode()).hexdigest()
-OTHER_CLIENT_TOKEN_HASH = hashlib.sha256(OTHER_CLIENT_TOKEN.encode()).hexdigest()
 
 
 def _dummy_asgi_app(scopes_seen):
@@ -38,51 +34,6 @@ def _dummy_asgi_app(scopes_seen):
     return app
 
 
-class LoadClientTokenHashesTests(unittest.TestCase):
-    def test_loads_lowercase_hashes_skipping_comments_and_blank_lines(self):
-        # Happy path: mixed-case hex digests, comments and blank lines all tolerated.
-        content = (
-            "# client token hashes\n"
-            f"{CLIENT_TOKEN_HASH.upper()}\n"
-            "\n"
-            f"{OTHER_CLIENT_TOKEN_HASH}\n"
-            "   \n"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "client-token-hashes.txt"
-            path.write_text(content, encoding="utf-8")
-            self.assertEqual(
-                load_client_token_hashes(path),
-                (CLIENT_TOKEN_HASH, OTHER_CLIENT_TOKEN_HASH),
-            )
-
-    def test_rejects_malformed_lines(self):
-        # Error cases: any non-comment line that is not exactly 64 hex chars must fail.
-        malformed_lines = {
-            "short line": "abc\n",
-            "63 hex chars": "a" * 63 + "\n",
-            "65 hex chars": "a" * 65 + "\n",
-            "non-hex characters": "z" * 64 + "\n",
-        }
-        for label, bad_line in malformed_lines.items():
-            with self.subTest(label=label):
-                content = f"{CLIENT_TOKEN_HASH}\n{bad_line}"
-                with tempfile.TemporaryDirectory() as tmp:
-                    path = Path(tmp) / "client-token-hashes.txt"
-                    path.write_text(content, encoding="utf-8")
-                    with self.assertRaises(ValueError):
-                        load_client_token_hashes(str(path))
-
-    def test_rejects_file_without_any_hash(self):
-        # Fail closed: comments and blank lines alone must not produce an empty allowlist.
-        content = "# just a comment\n\n   \n"
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "client-token-hashes.txt"
-            path.write_text(content, encoding="utf-8")
-            with self.assertRaises(ValueError):
-                load_client_token_hashes(str(path))
-
-
 class BearerAuthMiddlewareTests(unittest.TestCase):
     def setUp(self):
         self.scopes_seen = []
@@ -97,8 +48,12 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
             "wrong bearer token": {"Authorization": f"Bearer {OTHER_CLIENT_TOKEN}"},
             "wrong scheme": {"Authorization": f"Basic {CLIENT_TOKEN}"},
             "bearer without token": {"Authorization": "Bearer"},
+            "hashed token instead of the token": {
+                "Authorization": f"Bearer {hashlib.sha256(CLIENT_TOKEN.encode()).hexdigest()}"
+            },
+            "non-ascii token": {"Authorization": "Bearer t\u00f6ken".encode("latin-1")},
         }
-        middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+        middleware = BearerAuthMiddleware(self._app(), CLIENT_TOKEN)
         for label, headers in headers_by_case.items():
             with self.subTest(label=label):
                 self.scopes_seen.clear()
@@ -110,7 +65,7 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
 
     def test_allows_request_with_valid_bearer_token(self):
         # Happy path: matching bearer token reaches the wrapped app and gets its 200.
-        middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+        middleware = BearerAuthMiddleware(self._app(), CLIENT_TOKEN)
         response = TestClient(middleware).get(
             "/", headers={"Authorization": f"Bearer {CLIENT_TOKEN}"}
         )
@@ -118,21 +73,9 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.text, "ok")
         self.assertIn("http", self.scopes_seen)
 
-    def test_allows_token_matching_a_file_loaded_hash(self):
-        # Happy path: hash loaded from a file (stored uppercase) authorizes the raw client token.
-        content = f"{CLIENT_TOKEN_HASH.upper()}\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "client-token-hashes.txt"
-            path.write_text(content, encoding="utf-8")
-            middleware = BearerAuthMiddleware(self._app(), load_client_token_hashes(str(path)))
-        response = TestClient(middleware).get(
-            "/", headers={"Authorization": f"Bearer {CLIENT_TOKEN}"}
-        )
-        self.assertEqual(response.status_code, 200)
-
     def test_passes_lifespan_scope_through_to_the_wrapped_app(self):
         # Lifespan must reach the wrapped app so MCP task-group startup still runs.
-        middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+        middleware = BearerAuthMiddleware(self._app(), CLIENT_TOKEN)
         with TestClient(middleware):
             self.assertIn("lifespan", self.scopes_seen)
 
@@ -147,7 +90,7 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
             async def send(message):
                 sent.append(message)
 
-            middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+            middleware = BearerAuthMiddleware(self._app(), CLIENT_TOKEN)
             await middleware({"type": "websocket", "headers": ()}, receive, send)
             return sent
 
@@ -167,7 +110,7 @@ class BearerAuthMiddlewareTests(unittest.TestCase):
             async def send(message):
                 sent.append(message)
 
-            middleware = BearerAuthMiddleware(self._app(), (CLIENT_TOKEN_HASH,))
+            middleware = BearerAuthMiddleware(self._app(), CLIENT_TOKEN)
             await middleware({"type": "mystery"}, receive, send)
             return sent
 

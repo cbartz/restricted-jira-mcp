@@ -1,6 +1,5 @@
 """Streamable-HTTP transport wiring tests: bearer auth gates the MCP endpoint."""
 
-import hashlib
 import json
 import os
 import tempfile
@@ -11,11 +10,11 @@ from unittest import mock
 from starlette.testclient import TestClient
 
 import test_jira_client
-from restricted_jira_mcp.jira_client import JiraClient
+from restricted_jira_mcp.config import HTTPConfig
 from restricted_jira_mcp.server import build_http_app, create_server, main
 
 CLIENT_TOKEN = "client-token-1"
-CLIENT_TOKEN_HASH = hashlib.sha256(CLIENT_TOKEN.encode()).hexdigest()
+HTTP_CONFIG = HTTPConfig(host="127.0.0.1", port=8000, client_token=CLIENT_TOKEN)
 ACCEPT_HEADERS = {"Accept": "application/json, text/event-stream"}
 
 
@@ -34,19 +33,17 @@ class HTTPTransportTests(unittest.TestCase):
     def setUp(self):
         self.session = test_jira_client.FakeSession()
         self.client = test_jira_client.client(self.session)
-        tokens_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(tokens_dir.cleanup)
-        tokens_path = Path(tokens_dir.name) / "client-token-hashes.txt"
-        tokens_path.write_text(CLIENT_TOKEN_HASH + "\n", encoding="utf-8")
-        env_patcher = mock.patch.dict(
-            os.environ, {"JIRA_MCP_CLIENT_TOKENS_FILE": str(tokens_path)}
-        )
-        env_patcher.start()
-        self.addCleanup(env_patcher.stop)
 
-    def _post_tools_call(self, name: str, arguments: dict, headers: dict):
-        app = build_http_app(self.client, host="127.0.0.1", port=8000)
-        with TestClient(app, base_url="http://127.0.0.1:8000") as http:
+    def _post_tools_call(
+        self,
+        name: str,
+        arguments: dict,
+        headers: dict,
+        http_config: HTTPConfig = HTTP_CONFIG,
+        base_url: str = "http://127.0.0.1:8000",
+    ):
+        app = build_http_app(self.client, http_config)
+        with TestClient(app, base_url=base_url) as http:
             return http.post(
                 "/mcp",
                 json=_tools_call_body(name, arguments),
@@ -62,7 +59,7 @@ class HTTPTransportTests(unittest.TestCase):
         self.assertEqual(self.session.calls, [])
 
     def test_http_rejects_wrong_token(self):
-        # A bearer token whose hash is not in the file must get the same generic 401.
+        # A bearer token that is not configured must get the same generic 401.
         response = self._post_tools_call(
             "jira_get_issue",
             {"issue_key": "ISD-5444"},
@@ -98,6 +95,52 @@ class HTTPTransportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         issue = json.loads(response.json()["result"]["content"][0]["text"])
         self.assertEqual(issue["key"], "ISD-5444")
+
+    def test_http_accepts_host_headers_on_the_allow_list(self):
+        # Bound to a bridge address, the server accepts its own address, loopback, and
+        # any configured allowed_hosts entry as the Host header.
+        http_config = HTTPConfig(
+            host="10.0.0.1",
+            port=8000,
+            allowed_hosts=("jira-mcp.lan:8000",),
+            client_token=CLIENT_TOKEN,
+        )
+        for base_url in (
+            "http://10.0.0.1:8000",
+            "http://10.0.0.1",
+            "http://127.0.0.1:8000",
+            "http://localhost:8000",
+            "http://jira-mcp.lan:8000",
+        ):
+            with self.subTest(base_url=base_url):
+                response = self._post_tools_call(
+                    "jira_get_issue",
+                    {"issue_key": "ISD-5444"},
+                    {"Authorization": f"Bearer {CLIENT_TOKEN}"},
+                    http_config=http_config,
+                    base_url=base_url,
+                )
+                self.assertEqual(response.status_code, 200)
+
+    def test_http_rejects_unlisted_host_and_origin_headers(self):
+        # DNS-rebinding protection stays on for non-loopback binds: an unknown Host gets
+        # 421 and a foreign Origin gets 403, even with a valid token.
+        http_config = HTTPConfig(host="10.0.0.1", port=8000, client_token=CLIENT_TOKEN)
+        cases = {
+            "unlisted host": ("http://evil.example:8000", {}, 421),
+            "foreign origin": ("http://10.0.0.1:8000", {"Origin": "http://evil.example"}, 403),
+        }
+        for label, (base_url, extra_headers, status) in cases.items():
+            with self.subTest(label=label):
+                response = self._post_tools_call(
+                    "jira_get_issue",
+                    {"issue_key": "ISD-5444"},
+                    {"Authorization": f"Bearer {CLIENT_TOKEN}", **extra_headers},
+                    http_config=http_config,
+                    base_url=base_url,
+                )
+                self.assertEqual(response.status_code, status)
+        self.assertEqual(self.session.calls, [])
 
     def test_http_add_comment_accepts_raw_adf_dict_body(self):
         # A raw ADF doc dict body must pass FastMCP's schema validation and reach
@@ -173,14 +216,9 @@ class CreateServerTests(unittest.TestCase):
     def _tool_names(self, mcp) -> list[str]:
         return sorted(tool.name for tool in mcp._tool_manager.list_tools())
 
-    def test_create_server_uses_injected_client(self):
-        # Injecting a client registers every tool on it, without touching JiraClient.from_env.
-        with mock.patch.object(
-            JiraClient,
-            "from_env",
-            side_effect=AssertionError("create_server must use the injected client"),
-        ):
-            names = self._tool_names(create_server(self.client))
+    def test_create_server_registers_every_tool(self):
+        # The stdio server exposes the full tool set over the given client.
+        names = self._tool_names(create_server(self.client))
 
         self.assertEqual(
             names,
@@ -198,115 +236,99 @@ class CreateServerTests(unittest.TestCase):
             ],
         )
 
-    def test_create_server_defaults_to_from_env(self):
-        # The zero-argument path keeps existing behaviour: one JiraClient built from env.
-        with mock.patch.object(JiraClient, "from_env", return_value=self.client) as from_env:
-            mcp = create_server()
-
-        from_env.assert_called_once_with()
-        self.assertIn("jira_get_issue", self._tool_names(mcp))
-
-
-class BuildHTTPAppTokensTests(unittest.TestCase):
-    """build_http_app() must fail closed at startup without usable client-token hashes."""
-
-    def setUp(self):
-        self.session = test_jira_client.FakeSession()
-        self.client = test_jira_client.client(self.session)
-
-    def test_build_http_app_fails_closed_without_usable_tokens_file(self):
-        # Every unusable $JIRA_MCP_CLIENT_TOKENS_FILE must raise ValueError, never serve open.
-        with tempfile.TemporaryDirectory() as tmp:
-            empty_file = Path(tmp) / "only-comments.txt"
-            empty_file.write_text("\n# no hashes here\n", encoding="utf-8")
-            env_without_tokens = {
-                key: value
-                for key, value in os.environ.items()
-                if key != "JIRA_MCP_CLIENT_TOKENS_FILE"
-            }
-            cases = [
-                ("env var unset", dict(env_without_tokens)),
-                ("env var empty", {**env_without_tokens, "JIRA_MCP_CLIENT_TOKENS_FILE": ""}),
-                (
-                    "tokens file missing",
-                    {**env_without_tokens, "JIRA_MCP_CLIENT_TOKENS_FILE": str(Path(tmp) / "nope.txt")},
-                ),
-                (
-                    "tokens file without hashes",
-                    {**env_without_tokens, "JIRA_MCP_CLIENT_TOKENS_FILE": str(empty_file)},
-                ),
-            ]
-            for label, env in cases:
-                with self.subTest(label=label):
-                    with mock.patch.dict(os.environ, env, clear=True):
-                        with self.assertRaises(ValueError):
-                            build_http_app(self.client, host="127.0.0.1", port=8000)
-                    self.assertEqual(self.session.calls, [])
-
 
 class MainEntrypointTests(unittest.TestCase):
-    """main() must pick the transport before touching any Jira config or token files."""
+    """main() must pick the transport and config file before touching Jira."""
 
     def setUp(self):
-        self.session = test_jira_client.FakeSession()
-        self.client = test_jira_client.client(self.session)
-
-    def _env_without(self, *names: str) -> dict:
-        return {
-            key: value
-            for key, value in os.environ.items()
-            if key not in names
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.config_path = Path(tmp.name) / "config.json"
+        self.config_data = {
+            "jira": {
+                "base_url": "https://example.atlassian.net",
+                "email": "user@example.com",
+                "api_token": "token",
+                "allowed_projects": ["ISD"],
+            },
+            "http": {"bind_address": "10.0.0.1:9000", "client_token": CLIENT_TOKEN},
         }
+        self._write_config()
+        env_patcher = mock.patch.dict(
+            os.environ,
+            {
+                key: value
+                for key, value in os.environ.items()
+                if key not in ("JIRA_MCP_TRANSPORT", "JIRA_MCP_CONFIG")
+            },
+            clear=True,
+        )
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+    def _write_config(self):
+        self.config_path.write_text(json.dumps(self.config_data), encoding="utf-8")
 
     def test_help_exits_zero_before_any_config_load(self):
-        # --help prints usage and exits 0 with no env at all and no JiraClient.from_env call.
-        with mock.patch.dict(os.environ, self._env_without("JIRA_MCP_TRANSPORT"), clear=True):
-            with mock.patch.object(
-                JiraClient,
-                "from_env",
-                side_effect=AssertionError("config must not load before --help"),
-            ):
-                with self.assertRaises(SystemExit) as ctx:
-                    main(["--help"])
+        # --help prints usage and exits 0 with no config file anywhere.
+        with mock.patch(
+            "restricted_jira_mcp.server.load_config",
+            side_effect=AssertionError("config must not load before --help"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["--help"])
 
         self.assertEqual(ctx.exception.code, 0)
 
     def test_main_defaults_to_stdio_transport(self):
-        # No flag and no env: the stdio server runs via create_server().run().
-        with mock.patch.dict(os.environ, self._env_without("JIRA_MCP_TRANSPORT"), clear=True):
-            with mock.patch.object(JiraClient, "from_env", return_value=self.client):
-                with mock.patch("mcp.server.fastmcp.FastMCP.run") as run:
-                    main([])
+        # No transport flag or env: the stdio server runs via create_server().run(),
+        # with the config named by --config.
+        with mock.patch("mcp.server.fastmcp.FastMCP.run") as run:
+            main(["--config", str(self.config_path)])
 
         run.assert_called_once_with()
 
-    def test_main_transport_env_selects_http(self):
-        # $JIRA_MCP_TRANSPORT=http must serve the bearer-authenticated app via uvicorn.
-        env = {**self._env_without("JIRA_MCP_TRANSPORT"), "JIRA_MCP_TRANSPORT": "http"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(JiraClient, "from_env", return_value=self.client):
-                with mock.patch(
-                    "restricted_jira_mcp.server.build_http_app", return_value="asgi-app"
-                ) as build:
+    def test_main_transport_env_selects_http_from_config_env(self):
+        # $JIRA_MCP_TRANSPORT=http with $JIRA_MCP_CONFIG serves the bearer-authenticated
+        # app via uvicorn on the configured bind address.
+        os.environ["JIRA_MCP_TRANSPORT"] = "http"
+        os.environ["JIRA_MCP_CONFIG"] = str(self.config_path)
+        with mock.patch(
+            "restricted_jira_mcp.server.build_http_app", return_value="asgi-app"
+        ) as build:
+            with mock.patch("uvicorn.run") as run:
+                main([])
+
+        self.assertEqual(build.call_args.args[1].client_token, CLIENT_TOKEN)
+        run.assert_called_once_with("asgi-app", host="10.0.0.1", port=9000)
+
+    def test_main_fails_closed_on_unusable_startup_input(self):
+        # Error cases: no config named, a typo in the transport env, and HTTP requested
+        # from a config without an http section must all stop before serving.
+        del self.config_data["http"]
+        self._write_config()
+        cases = {
+            "no config path": ([], {}, SystemExit),
+            "invalid transport env": (
+                ["--config", str(self.config_path)],
+                {"JIRA_MCP_TRANSPORT": "bogus"},
+                SystemExit,
+            ),
+            "http without http section": (
+                ["--config", str(self.config_path), "--transport", "http"],
+                {},
+                ValueError,
+            ),
+        }
+        for label, (argv, env, error) in cases.items():
+            with self.subTest(label=label):
+                with mock.patch.dict(os.environ, env):
                     with mock.patch("uvicorn.run") as run:
-                        main(["--host", "0.0.0.0", "--port", "9000"])
-
-        build.assert_called_once_with(self.client, "0.0.0.0", 9000)
-        run.assert_called_once_with("asgi-app", host="0.0.0.0", port=9000)
-
-    def test_main_invalid_transport_env_fails_closed(self):
-        # A typo in $JIRA_MCP_TRANSPORT must exit with an error, not silently serve stdio.
-        env = {**self._env_without("JIRA_MCP_TRANSPORT"), "JIRA_MCP_TRANSPORT": "bogus"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(
-                JiraClient,
-                "from_env",
-                side_effect=AssertionError("config must not load before validation"),
-            ):
-                with self.assertRaises(SystemExit) as ctx:
-                    main([])
-
-        self.assertEqual(ctx.exception.code, 2)
+                        with mock.patch("mcp.server.fastmcp.FastMCP.run") as stdio_run:
+                            with self.assertRaises(error):
+                                main(argv)
+                run.assert_not_called()
+                stdio_run.assert_not_called()
 
 
 if __name__ == "__main__":

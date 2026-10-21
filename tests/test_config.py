@@ -1,108 +1,162 @@
-import os
+import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 
-from restricted_jira_mcp.config import JiraConfig
+from restricted_jira_mcp.config import HTTPConfig, JiraConfig, ServerConfig, load_config
 
 
-class TestConfig(unittest.TestCase):
+def _jira_section(**overrides):
+    section = {
+        "base_url": "https://example.atlassian.net/",
+        "email": "test@example.com",
+        "api_token": "secret",
+        "allowed_projects": ["PROJ1", "PROJ2"],
+    }
+    section.update(overrides)
+    return section
+
+
+def _http_section(**overrides):
+    section = {
+        "bind_address": "10.0.0.1:8000",
+        "client_token": "token-a",
+    }
+    section.update(overrides)
+    return section
+
+
+class TestLoadConfig(unittest.TestCase):
     def setUp(self):
-        # Set minimal required environment variables for most tests
-        self.base_env = {
-            "JIRA_BASE_URL": "https://example.atlassian.net",
-            "JIRA_EMAIL": "test@example.com",
-            "JIRA_ALLOWED_PROJECTS": "PROJ1,PROJ2",
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "config.json"
+
+    def _load(self, data):
+        self.path.write_text(json.dumps(data) if not isinstance(data, str) else data, encoding="utf-8")
+        return load_config(self.path)
+
+    def test_loads_full_config(self):
+        # Happy path: both sections parse, the base URL loses its trailing slash, and an
+        # omitted http section means stdio-only (http is None).
+        config = self._load({
+            "jira": _jira_section(allowed_custom_fields=["customfield_1"]),
+            "http": _http_section(allowed_hosts=["jira-mcp.lan:8000"]),
+        })
+
+        self.assertEqual(
+            config,
+            ServerConfig(
+                jira=JiraConfig(
+                    base_url="https://example.atlassian.net",
+                    email="test@example.com",
+                    api_token="secret",
+                    allowed_projects=("PROJ1", "PROJ2"),
+                    allowed_custom_fields=("customfield_1",),
+                ),
+                http=HTTPConfig(
+                    host="10.0.0.1",
+                    port=8000,
+                    allowed_hosts=("jira-mcp.lan:8000",),
+                    client_token="token-a",
+                ),
+            ),
+        )
+        self.assertIsNone(self._load({"jira": _jira_section()}).http)
+
+    def test_parses_ipv6_bind_address(self):
+        # A bracketed IPv6 bind address yields the bare address uvicorn binds to.
+        config = self._load({"jira": _jira_section(), "http": _http_section(bind_address="[::1]:9000")})
+
+        self.assertEqual((config.http.host, config.http.port), ("::1", 9000))
+
+    def test_rejects_invalid_config(self):
+        # Every unusable config must fail closed at load time with a ValueError naming the problem.
+        cases = {
+            "malformed json": ("{not json", "config.json"),
+            "top level not an object": ([], "object"),
+            "missing jira section": ({}, "jira"),
+            "unknown top-level key": ({"jira": _jira_section(), "htpp": {}}, "htpp"),
+            "unknown jira key": ({"jira": _jira_section(allowed_project=["X"])}, "allowed_project"),
+            "missing api token": (
+                {"jira": {k: v for k, v in _jira_section().items() if k != "api_token"}},
+                "api_token",
+            ),
+            "placeholder api token": ({"jira": _jira_section(api_token="CHANGE_ME")}, "api_token"),
+            "empty email": ({"jira": _jira_section(email="")}, "email"),
+            "projects not a list": ({"jira": _jira_section(allowed_projects="ISD,ISREQ")}, "allowed_projects"),
+            "empty projects": ({"jira": _jira_section(allowed_projects=[])}, "allowed_projects"),
+            "unknown http key": ({"jira": _jira_section(), "http": _http_section(port=1)}, "port"),
+            "bind address without port": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1")},
+                "bind_address",
+            ),
+            "empty bracketed host": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="[]:8000")},
+                "bind_address",
+            ),
+            "non-numeric port": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:http")},
+                "bind_address",
+            ),
+            "wildcard bind without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="0.0.0.0:8000")},
+                "allowed_hosts",
+            ),
+            "long-form ipv6 wildcard bind without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="[0:0:0:0:0:0:0:0]:8000")},
+                "allowed_hosts",
+            ),
+            "numeric ipv4 wildcard alias without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="0:8000")},
+                "allowed_hosts",
+            ),
+            "hex ipv4 wildcard alias without allowed hosts": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="0x0:8000")},
+                "allowed_hosts",
+            ),
+            "port out of range": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:65536")},
+                "bind_address",
+            ),
+            "port zero": (
+                {"jira": _jira_section(), "http": _http_section(bind_address="10.0.0.1:0")},
+                "bind_address",
+            ),
+            "blank project entry": (
+                {"jira": _jira_section(allowed_projects=["ISD", " "])},
+                "allowed_projects",
+            ),
+            "placeholder allowed host": (
+                {
+                    "jira": _jira_section(),
+                    "http": _http_section(bind_address="0.0.0.0:8000", allowed_hosts=["CHANGE_ME"]),
+                },
+                "allowed_hosts",
+            ),
+            "missing client token": (
+                {"jira": _jira_section(), "http": {"bind_address": "10.0.0.1:8000"}},
+                "client_token",
+            ),
+            "placeholder client token": (
+                {"jira": _jira_section(), "http": _http_section(client_token="CHANGE_ME")},
+                "client_token",
+            ),
+            "empty client token": ({"jira": _jira_section(), "http": _http_section(client_token="")}, "client_token"),
         }
+        for label, (data, expected_in_message) in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError) as ctx:
+                    self._load(data)
+                self.assertIn(expected_in_message, str(ctx.exception))
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_missing_required_environment_variables(self):
-        """Neither JIRA_API_TOKEN nor JIRA_API_TOKEN_FILE set - should raise ValueError mentioning JIRA_API_TOKEN"""
-        with self.assertRaises(ValueError) as cm:
-            JiraConfig.from_env()
-        self.assertIn("Missing required environment variables: JIRA_BASE_URL, JIRA_EMAIL, JIRA_ALLOWED_PROJECTS, JIRA_API_TOKEN", str(cm.exception))
+    def test_missing_file_raises_value_error_naming_the_path(self):
+        # An unreadable path is a config error, not a bare OSError traceback.
+        missing = self.path.parent / "nope.json"
+        with self.assertRaises(ValueError) as ctx:
+            load_config(missing)
+        self.assertIn(str(missing), str(ctx.exception))
 
-    @patch.dict(os.environ, {"JIRA_API_TOKEN": "secret"})
-    def test_api_token_from_environment_variable(self):
-        """API token from JIRA_API_TOKEN environment variable (existing behavior)"""
-        with patch.dict(os.environ, {
-            **self.base_env,
-            "JIRA_API_TOKEN": "secret"
-        }):
-            config = JiraConfig.from_env()
-            self.assertEqual(config.api_token, "secret")
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_api_token_from_file(self):
-        """API token from JIRA_API_TOKEN_FILE environment variable"""
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-            f.write("secret\n")
-            temp_file_path = f.name
-        
-        try:
-            with patch.dict(os.environ, {
-                **self.base_env,
-                "JIRA_API_TOKEN_FILE": temp_file_path
-            }):
-                config = JiraConfig.from_env()
-                self.assertEqual(config.api_token, "secret")
-        finally:
-            os.unlink(temp_file_path)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_api_token_from_file_with_whitespace(self):
-        """API token from file with surrounding whitespace should be stripped"""
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-            f.write("  secret  \n")
-            temp_file_path = f.name
-        
-        try:
-            with patch.dict(os.environ, {
-                **self.base_env,
-                "JIRA_API_TOKEN_FILE": temp_file_path
-            }):
-                config = JiraConfig.from_env()
-                self.assertEqual(config.api_token, "secret")
-        finally:
-            os.unlink(temp_file_path)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_both_token_variables_set(self):
-        """Both JIRA_API_TOKEN and JIRA_API_TOKEN_FILE set - should raise ValueError"""
-        with patch.dict(os.environ, {
-            **self.base_env,
-            "JIRA_API_TOKEN": "secret1",
-            "JIRA_API_TOKEN_FILE": "/path/to/file"
-        }):
-            with self.assertRaises(ValueError) as cm:
-                JiraConfig.from_env()
-            self.assertEqual(str(cm.exception), "Set only one of JIRA_API_TOKEN and JIRA_API_TOKEN_FILE")
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_missing_token_file(self):
-        """JIRA_API_TOKEN_FILE points to non-existent file - should raise ValueError naming the path"""
-        with patch.dict(os.environ, {
-            **self.base_env,
-            "JIRA_API_TOKEN_FILE": "/non/existent/path"
-        }):
-            with self.assertRaises(ValueError) as cm:
-                JiraConfig.from_env()
-            self.assertIn("/non/existent/path", str(cm.exception))
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_empty_token_file(self):
-        """JIRA_API_TOKEN_FILE points to empty file - should raise ValueError naming the path"""
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-            f.write("")
-            temp_file_path = f.name
-        
-        try:
-            with patch.dict(os.environ, {
-                **self.base_env,
-                "JIRA_API_TOKEN_FILE": temp_file_path
-            }):
-                with self.assertRaises(ValueError) as cm:
-                    JiraConfig.from_env()
-                self.assertIn(temp_file_path, str(cm.exception))
-        finally:
-            os.unlink(temp_file_path)
+if __name__ == "__main__":
+    unittest.main()

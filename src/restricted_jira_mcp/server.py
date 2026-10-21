@@ -4,15 +4,15 @@ import argparse
 import os
 from typing import Any
 
-from .http_auth import ASGIApp, BearerAuthMiddleware, load_client_token_hashes
+from .config import HTTPConfig, load_config
+from .http_auth import ASGIApp, BearerAuthMiddleware
 from .jira_client import JiraClient
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
-def create_server(client: JiraClient | None = None) -> Any:
-    """Build the FastMCP server with every tool registered over the given JiraClient.
 
-    When no client is injected, one is built from the environment (existing behaviour).
-    """
+def create_server(client: JiraClient) -> Any:
+    """Build the FastMCP server with every tool registered over the given JiraClient."""
     try:
         from mcp.server.fastmcp import FastMCP
     except ModuleNotFoundError as exc:
@@ -22,35 +22,43 @@ def create_server(client: JiraClient | None = None) -> Any:
         ) from exc
 
     mcp = FastMCP("restricted-jira-mcp")
-    _register_tools(mcp, JiraClient.from_env() if client is None else client)
+    _register_tools(mcp, client)
     return mcp
 
 
-def build_http_app(client: JiraClient, host: str, port: int) -> ASGIApp:
+def build_http_app(client: JiraClient, http: HTTPConfig) -> ASGIApp:
     """Wrap the stateless streamable-HTTP MCP app behind per-client bearer-token auth.
 
-    Token hashes come from the file named by $JIRA_MCP_CLIENT_TOKENS_FILE; an
-    unusable value fails closed with ValueError before anything is served.
+    Host and Origin headers are checked against the bind address, loopback and
+    http.allowed_hosts (DNS-rebinding protection), after the bearer check.
     """
-    token_hashes = _load_client_token_hashes()
-
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.transport_security import TransportSecuritySettings
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "The MCP SDK is not installed. Install project dependencies before running "
             "the MCP server, for example: python3 -m pip install -e ."
         ) from exc
 
+    allowed_hosts = list(http.allowed_hosts)
+    for host in (http.host, *_LOOPBACK_HOSTS):
+        host_header = f"[{host}]" if ":" in host else host
+        allowed_hosts += [host_header, f"{host_header}:*"]
     mcp = FastMCP(
         "restricted-jira-mcp",
-        host=host,
-        port=port,
+        host=http.host,
+        port=http.port,
         stateless_http=True,
         json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=[f"{scheme}://{host}" for host in allowed_hosts for scheme in ("http", "https")],
+        ),
     )
     _register_tools(mcp, client)
-    return BearerAuthMiddleware(mcp.streamable_http_app(), token_hashes)
+    return BearerAuthMiddleware(mcp.streamable_http_app(), http.client_token)
 
 
 def _register_tools(mcp: Any, client: JiraClient) -> None:
@@ -133,24 +141,11 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
         return client.delete_comment(issue_key, comment_id)
 
 
-def _load_client_token_hashes() -> tuple[str, ...]:
-    """Read the per-client bearer token hashes named by $JIRA_MCP_CLIENT_TOKENS_FILE."""
-    path = os.environ.get("JIRA_MCP_CLIENT_TOKENS_FILE")
-    if not path:
-        raise ValueError(
-            "JIRA_MCP_CLIENT_TOKENS_FILE is not set; serving HTTP requires a client-token hash file"
-        )
-    try:
-        return load_client_token_hashes(path)
-    except OSError as exc:
-        raise ValueError(f"Could not read client-token hash file {path}: {exc}") from exc
-
-
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI flags; the transport default comes from $JIRA_MCP_TRANSPORT or stdio.
+    """Parse CLI flags; defaults come from $JIRA_MCP_CONFIG and $JIRA_MCP_TRANSPORT.
 
     Environment variables are read only after parsing, so --help always exits 0
-    before any config or token loading can happen.
+    before any config loading can happen.
     """
     parser = argparse.ArgumentParser(
         prog="restricted-jira-mcp",
@@ -161,9 +156,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("stdio", "http"),
         help="Transport to serve on (default: $JIRA_MCP_TRANSPORT or stdio).",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1).")
-    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: 8000).")
+    parser.add_argument("--config", help="Path to the JSON config file (default: $JIRA_MCP_CONFIG).")
     args = parser.parse_args(argv)
+    if args.config is None:
+        args.config = os.environ.get("JIRA_MCP_CONFIG")
+    if not args.config:
+        parser.error("no config file: pass --config or set JIRA_MCP_CONFIG")
     if args.transport is None:
         args.transport = _transport_from_env(parser)
     return args
@@ -182,13 +180,16 @@ def _transport_from_env(parser: argparse.ArgumentParser) -> str:
 def main(argv: list[str] | None = None) -> None:
     """Entry point: serve the MCP server over stdio (default) or streamable HTTP."""
     args = _parse_args(argv)
+    config = load_config(args.config)
+    client = JiraClient.from_config(config.jira)
     if args.transport == "http":
+        if config.http is None:
+            raise ValueError(f"{args.config} has no \"http\" section; HTTP transport needs one")
         import uvicorn
 
-        client = JiraClient.from_env()
-        uvicorn.run(build_http_app(client, args.host, args.port), host=args.host, port=args.port)
+        uvicorn.run(build_http_app(client, config.http), host=config.http.host, port=config.http.port)
     else:
-        create_server().run()
+        create_server(client).run()
 
 
 if __name__ == "__main__":

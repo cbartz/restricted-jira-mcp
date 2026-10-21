@@ -1,0 +1,14 @@
+{
+  "jira": {
+    "base_url": "https://your-company.atlassian.net",
+    "email": "you@example.com",
+    "api_token": "CHANGE_ME",
+    "allowed_projects": ["ISD", "ISREQ"],
+    "allowed_custom_fields": []
+  },
+  "http": {
+    "bind_address": "127.0.0.1:8000",
+    "allowed_hosts": [],
+    "client_token": "CHANGE_ME"
+  }
+}
