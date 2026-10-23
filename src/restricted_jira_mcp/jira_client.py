@@ -499,9 +499,10 @@ def _safe_error_detail(response: requests.Response) -> str:
 def _match_transition(transitions: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
     """Pick the transition named by id, by name, or by target status, in that order.
 
-    Several transitions can lead to the same status (for example "Reject" and
-    "Decline" both ending in Rejected); guessing between them could skip a
-    workflow's side effects, so an ambiguous status is refused instead.
+    The first tier with any match decides. Several transitions can share a
+    name or lead to the same status (for example "Reject" and "Decline" both
+    ending in Rejected); guessing between them, or falling through to a later
+    tier, could run a workflow's other side effects, so ambiguity is refused.
     """
     needle = wanted.strip().casefold()
     by_id = [t for t in transitions if t.get("id") == wanted.strip()]
@@ -509,16 +510,16 @@ def _match_transition(transitions: list[dict[str, Any]], wanted: str) -> dict[st
     by_status = [
         t for t in transitions if ((t.get("to") or {}).get("name") or "").casefold() == needle
     ]
-    for matches in (by_id, by_name, by_status):
-        if len(matches) == 1:
-            return matches[0]
+    matches = by_id or by_name or by_status
+    if len(matches) == 1:
+        return matches[0]
     available = "; ".join(
         f"{t.get('id')} {t.get('name')!r} -> {(t.get('to') or {}).get('name')!r}"
         for t in transitions
     )
-    if len(by_status) > 1:
+    if matches:
         raise JiraClientError(
-            f"Status {wanted!r} is ambiguous; name one transition instead. Available: {available}"
+            f"Transition {wanted!r} is ambiguous; pass a transition id instead. Available: {available}"
         )
     raise JiraClientError(
         f"No transition {wanted!r} from the current status. Available: {available or 'none'}"

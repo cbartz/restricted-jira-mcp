@@ -231,7 +231,7 @@ jira_transitions(issue_key="ISD-5872")
 jira_transition_issue(issue_key="ISD-5872", transition="Rejected", resolution="Won't Do")
 ```
 
-`transition` may be a transition id, a transition name, or the target status name. When several transitions lead to the same status, the call is refused and lists them, so name the transition you mean. Only the transitions valid from the issue's current status are offered. Pass `resolution` when the transition's screen requires one; resolution names are site-specific.
+`transition` may be a transition id, a transition name, or the target status name. The first of these that matches decides; if it matches several transitions (two sharing a name, or two leading to the same status), the call is refused and lists them with their ids. Only the transitions valid from the issue's current status are offered. Pass `resolution` when the transition's screen requires one; resolution names are site-specific.
 
 ## GitHub
 

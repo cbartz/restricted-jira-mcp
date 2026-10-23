@@ -963,16 +963,25 @@ class JiraClientTests(unittest.TestCase):
     def test_transition_issue_error_cases(self):
         # Ambiguous and unknown targets fail without posting and name the
         # available transitions so the caller can pick one.
+        # A duplicated transition name must not fall through to a status match.
+        duplicate_names = {
+            "transitions": [
+                {"id": "41", "name": "Review", "to": {"name": "In Review"}},
+                {"id": "42", "name": "Review", "to": {"name": "Peer Review"}},
+                {"id": "43", "name": "Send to review", "to": {"name": "Review"}},
+            ]
+        }
         cases = [
-            ("rejected", "ambiguous", "Reject"),
-            ("Done", "No transition", "Start progress"),
+            ("rejected", transitions_payload(), "ambiguous", "Reject"),
+            ("Review", duplicate_names, "ambiguous", "Send to review"),
+            ("Done", transitions_payload(), "No transition", "Start progress"),
         ]
-        for transition, message, listed in cases:
+        for transition, payload, message, listed in cases:
             with self.subTest(transition=transition):
                 session = FakeSession()
                 session.get_responses = [
                     FakeResponse(200, issue_payload("ISD-5444", "ISD")),
-                    FakeResponse(200, transitions_payload()),
+                    FakeResponse(200, payload),
                 ]
 
                 with self.assertRaises(JiraClientError) as cm:
