@@ -293,6 +293,49 @@ class JiraClient:
             ]
         }
 
+    def transitions(self, issue_key: str) -> dict[str, Any]:
+        resolved_key = self._resolve_issue(issue_key)
+        return {
+            "issue_key": resolved_key,
+            "transitions": [
+                {
+                    "id": transition.get("id"),
+                    "name": transition.get("name"),
+                    "to_status": (transition.get("to") or {}).get("name"),
+                }
+                for transition in self._available_transitions(resolved_key)
+            ],
+        }
+
+    def transition_issue(
+        self,
+        issue_key: str,
+        transition: str,
+        resolution: str | None = None,
+    ) -> dict[str, str]:
+        """Move an issue through the workflow to change its status.
+
+        transition names a transition by id or name, or the status it leads
+        to; Jira only offers the transitions valid from the current status.
+        """
+        resolved_key = self._resolve_issue(issue_key)
+        chosen = _match_transition(self._available_transitions(resolved_key), transition)
+        body: dict[str, Any] = {"transition": {"id": chosen["id"]}}
+        if resolution:
+            body["fields"] = {"resolution": {"name": resolution}}
+        response = self.session.post(
+            self._url(f"/rest/api/3/issue/{resolved_key}/transitions"),
+            json=body,
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        return {
+            "status": "transitioned",
+            "issue_key": resolved_key,
+            "transition_id": chosen["id"],
+            "to_status": (chosen.get("to") or {}).get("name"),
+        }
+
     def add_comment(self, issue_key: str, body: str | dict) -> dict[str, Any]:
         resolved_key = self._resolve_issue(issue_key)
         response = self.session.post(
@@ -348,6 +391,13 @@ class JiraClient:
             payload = self._json_response(response)
             self._cached_account_id = payload["accountId"]
         return self._cached_account_id
+
+    def _available_transitions(self, resolved_key: str) -> list[dict[str, Any]]:
+        response = self.session.get(
+            self._url(f"/rest/api/3/issue/{resolved_key}/transitions"),
+            timeout=30,
+        )
+        return self._json_response(response).get("transitions", [])
 
     def _resolve_issue(self, issue_key: str) -> str:
         """Return the canonical key after proving the resolved issue is allowlisted.
@@ -447,6 +497,36 @@ def _safe_error_detail(response: requests.Response) -> str:
     messages = payload.get("errorMessages") or []
     errors = payload.get("errors") or {}
     return str({"errorMessages": messages, "errors": errors})[:500]
+
+
+def _match_transition(transitions: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
+    """Pick the transition named by id, by name, or by target status, in that order.
+
+    The first tier with any match decides. Several transitions can share a
+    name or lead to the same status (for example "Reject" and "Decline" both
+    ending in Rejected); guessing between them, or falling through to a later
+    tier, could run a workflow's other side effects, so ambiguity is refused.
+    """
+    needle = wanted.strip().casefold()
+    by_id = [t for t in transitions if t.get("id") == wanted.strip()]
+    by_name = [t for t in transitions if (t.get("name") or "").casefold() == needle]
+    by_status = [
+        t for t in transitions if ((t.get("to") or {}).get("name") or "").casefold() == needle
+    ]
+    matches = by_id or by_name or by_status
+    if len(matches) == 1:
+        return matches[0]
+    available = "; ".join(
+        f"{t.get('id')} {t.get('name')!r} -> {(t.get('to') or {}).get('name')!r}"
+        for t in transitions
+    )
+    if matches:
+        raise JiraClientError(
+            f"Transition {wanted!r} is ambiguous; pass a transition id instead. Available: {available}"
+        )
+    raise JiraClientError(
+        f"No transition {wanted!r} from the current status. Available: {available or 'none'}"
+    )
 
 
 def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:

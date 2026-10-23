@@ -40,6 +40,12 @@ class JiraPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "jira_link_issues"):
             policy.validate_update_fields({"issuelinks": []})
 
+    def test_rejects_status_update_field_with_tool_hint(self):
+        policy = JiraPolicy.create(("ISD",))
+
+        with self.assertRaisesRegex(PolicyError, "jira_transition_issue"):
+            policy.validate_update_fields({"status": {"name": "Rejected"}})
+
     def test_reports_issue_allowlist_membership(self):
         policy = JiraPolicy.create(("ISD", "ISREQ"))
 

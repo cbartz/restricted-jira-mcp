@@ -180,6 +180,10 @@ class JiraPolicy:
             raise PolicyError(
                 "Issue links cannot be set through fields; use the jira_link_issues tool"
             )
+        if "status" in fields:
+            raise PolicyError(
+                "Status cannot be set through fields; use the jira_transition_issue tool"
+            )
         rejected = sorted(
             field
             for field in fields

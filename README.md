@@ -138,13 +138,15 @@ Over stdio the agent's machine holds the Jira API token; prefer HTTP when the ag
   - `fixVersions` accepts a version name or a list of names (`{"fixVersions": ["27.04"]}`). It replaces the whole list, so read the current `fix_versions` from `jira_get_issue` first to add one. Jira resolves the names within the issue's own project.
 - `jira_link_issues(from_issue_key, to_issue_key, link_type="Relates")`
 - `jira_link_types()`
+- `jira_transitions(issue_key)`
+- `jira_transition_issue(issue_key, transition, resolution=None)`
 - `jira_add_comment(issue_key, body)`
 - `jira_update_comment(issue_key, comment_id, body)`
   - Restricted to comments authored by the configured user (an agent should not rewrite other people's words)
 - `jira_delete_comment(issue_key, comment_id)`
   - Restricted to comments authored by the configured user (an agent should not rewrite other people's words)
 
-Writes are deliberately limited to create, update, comment, and link. This v1 does not support transitions, attachments, deletes (including removing an existing link), bulk edits, watchers, worklogs, sprint or affects-version changes, or admin operations.
+Writes are deliberately limited to create, update, transition, comment, and link. This v1 does not support attachments, deletes (including removing an existing link), bulk edits, watchers, worklogs, sprint or affects-version changes, or admin operations.
 
 ## Body formats
 
@@ -220,6 +222,17 @@ jira_link_issues(
 The link reads in the direction `from_issue_key <link type outward wording> to_issue_key`, so the example above records "ISD-5444 relates to ISREQ-5090". Both keys must belong to allowlisted projects, and both are checked before any Jira request. Link type names are site-specific; `jira_link_types()` lists the names this site accepts along with their inward and outward wording.
 
 `jira_get_issue` now returns a `links` list. Links pointing at a non-allowlisted project are removed from the response, so an ISD issue linked to an NDA issue reveals neither its key nor its summary.
+
+## Changing status
+
+Jira changes status only through workflow transitions, so `status` is rejected by `jira_update_issue` with a pointer to `jira_transition_issue`.
+
+```text
+jira_transitions(issue_key="ISD-5872")
+jira_transition_issue(issue_key="ISD-5872", transition="Rejected", resolution="Won't Do")
+```
+
+`transition` may be a transition id, a transition name, or the target status name. The first of these that matches decides; if it matches several transitions (two sharing a name, or two leading to the same status), the call is refused and lists them with their ids. Only the transitions valid from the issue's current status are offered. Pass `resolution` when the transition's screen requires one; resolution names are site-specific.
 
 ## GitHub
 

@@ -126,6 +126,20 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
         return client.link_types()
 
     @mcp.tool()
+    def jira_transitions(issue_key: str) -> dict[str, Any]:
+        """List the workflow transitions available on an allowlisted issue from its current status."""
+        return client.transitions(issue_key)
+
+    @mcp.tool()
+    def jira_transition_issue(
+        issue_key: str,
+        transition: str,
+        resolution: str | None = None,
+    ) -> dict[str, str]:
+        """Change an allowlisted issue's status by running a workflow transition, named by transition id, transition name, or target status; resolution (e.g. "Won't Do") is set when the transition screen asks for one."""
+        return client.transition_issue(issue_key, transition, resolution=resolution)
+
+    @mcp.tool()
     def jira_add_comment(issue_key: str, body: str | dict) -> dict[str, Any]:
         """Add a comment to an allowlisted issue; body accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
         return client.add_comment(issue_key, body)
