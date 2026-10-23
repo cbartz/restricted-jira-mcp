@@ -104,6 +104,16 @@ def comment_payload(comment_id: str, text: str) -> dict[str, Any]:
     }
 
 
+def transitions_payload() -> dict[str, Any]:
+    return {
+        "transitions": [
+            {"id": "11", "name": "Start progress", "to": {"name": "In Progress"}},
+            {"id": "21", "name": "Reject", "to": {"name": "Rejected"}},
+            {"id": "31", "name": "Decline", "to": {"name": "Rejected"}},
+        ]
+    }
+
+
 class JiraClientTests(unittest.TestCase):
     def test_get_issue_rejects_disallowed_key_before_http(self):
         session = FakeSession()
@@ -902,6 +912,97 @@ class JiraClientTests(unittest.TestCase):
                 client(session).update_comment("ISD-5444", "99999", "new text")
             self.assertIn("99999", str(cm.exception))
             self.assertEqual(len(session.calls), 3)  # Only GET calls
+
+    def test_transitions_lists_available_transitions(self):
+        session = FakeSession()
+        session.get_responses = [
+            FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+            FakeResponse(200, transitions_payload()),
+        ]
+
+        result = client(session).transitions("isd-5444")
+
+        self.assertTrue(session.calls[1][1].endswith("/rest/api/3/issue/ISD-5444/transitions"))
+        self.assertEqual(
+            result,
+            {
+                "issue_key": "ISD-5444",
+                "transitions": [
+                    {"id": "11", "name": "Start progress", "to_status": "In Progress"},
+                    {"id": "21", "name": "Reject", "to_status": "Rejected"},
+                    {"id": "31", "name": "Decline", "to_status": "Rejected"},
+                ],
+            },
+        )
+
+    def test_transition_issue_posts_matched_transition(self):
+        # A target status reached by exactly one transition, a transition
+        # name, and a transition id all select that transition.
+        cases = [
+            ("in progress", None, "11", {"transition": {"id": "11"}}),
+            ("decline", None, "31", {"transition": {"id": "31"}}),
+            ("21", "Won't Do", "21", {"transition": {"id": "21"}, "fields": {"resolution": {"name": "Won't Do"}}}),
+        ]
+        for transition, resolution, expected_id, expected_body in cases:
+            with self.subTest(transition=transition):
+                session = FakeSession()
+                session.get_responses = [
+                    FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                    FakeResponse(200, transitions_payload()),
+                ]
+
+                result = client(session).transition_issue("isd-5444", transition, resolution=resolution)
+
+                method, url, kwargs = session.calls[2]
+                self.assertEqual(method, "POST")
+                self.assertTrue(url.endswith("/rest/api/3/issue/ISD-5444/transitions"))
+                self.assertEqual(kwargs["json"], expected_body)
+                self.assertEqual(result["status"], "transitioned")
+                self.assertEqual(result["transition_id"], expected_id)
+
+    def test_transition_issue_error_cases(self):
+        # Ambiguous and unknown targets fail without posting and name the
+        # available transitions so the caller can pick one.
+        # A duplicated transition name must not fall through to a status match.
+        duplicate_names = {
+            "transitions": [
+                {"id": "41", "name": "Review", "to": {"name": "In Review"}},
+                {"id": "42", "name": "Review", "to": {"name": "Peer Review"}},
+                {"id": "43", "name": "Send to review", "to": {"name": "Review"}},
+            ]
+        }
+        cases = [
+            ("rejected", transitions_payload(), "ambiguous", "Reject"),
+            ("Review", duplicate_names, "ambiguous", "Send to review"),
+            ("Done", transitions_payload(), "No transition", "Start progress"),
+        ]
+        for transition, payload, message, listed in cases:
+            with self.subTest(transition=transition):
+                session = FakeSession()
+                session.get_responses = [
+                    FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                    FakeResponse(200, payload),
+                ]
+
+                with self.assertRaises(JiraClientError) as cm:
+                    client(session).transition_issue("ISD-5444", transition)
+
+                self.assertIn(message, str(cm.exception))
+                self.assertIn(listed, str(cm.exception))
+                self.assertFalse(any(call[0] == "POST" for call in session.calls))
+
+        with self.subTest("disallowed issue key"):
+            session = FakeSession()
+            with self.assertRaises(PolicyError):
+                client(session).transition_issue("NDA-1", "Reject")
+            self.assertEqual(session.calls, [])
+
+        with self.subTest("issue resolved to disallowed project"):
+            session = FakeSession()
+            session.get_responses = [FakeResponse(200, issue_payload("ISD-5444", "NDA"))]
+            with self.assertRaises(PolicyError):
+                client(session).transition_issue("ISD-5444", "Reject")
+            self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":
