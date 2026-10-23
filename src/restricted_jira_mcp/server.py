@@ -108,7 +108,7 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
 
     @mcp.tool()
     def jira_update_issue(issue_key: str, fields: dict[str, Any]) -> dict[str, str]:
-        """Update an allowlisted issue's fields; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported."""
+        """Update an allowlisted issue's fields; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported; fixVersions takes version names and replaces the whole list."""
         return client.update_issue(issue_key, fields)
 
     @mcp.tool()

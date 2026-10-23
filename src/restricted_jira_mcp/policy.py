@@ -174,6 +174,7 @@ class JiraPolicy:
             "labels",
             "issuetype",
             "parent",
+            "fixVersions",
         }
         if "issuelinks" in fields:
             raise PolicyError(

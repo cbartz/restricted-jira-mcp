@@ -181,7 +181,35 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(request_json["fields"]["description"], adf_doc("hello"))
 
         with self.assertRaises(PolicyError):
-            client(session).update_issue("ISD-5444", {"fixVersions": []})
+            client(session).update_issue("ISD-5444", {"components": []})
+
+    def test_update_issue_sets_fix_versions_by_name(self):
+        # Version names are resolved by Jira within the issue's own project,
+        # so a bare name, a list of names and Jira's own shape all work.
+        cases = [
+            ("27.04", [{"name": "27.04"}]),
+            (["27.04", "27.10"], [{"name": "27.04"}, {"name": "27.10"}]),
+            ([{"name": "27.04"}], [{"name": "27.04"}]),
+            ([], []),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                session = FakeSession()
+
+                client(session).update_issue("ISD-5444", {"fixVersions": value})
+
+                self.assertEqual(session.calls[1][2]["json"]["fields"]["fixVersions"], expected)
+
+    def test_get_issue_returns_fix_versions(self):
+        session = FakeSession()
+        payload = issue_payload("ISD-5444", "ISD")
+        payload["fields"]["fixVersions"] = [{"id": "100", "name": "27.04"}]
+        session.next_get = FakeResponse(200, payload)
+
+        issue = client(session).get_issue("ISD-5444")
+
+        self.assertIn("fixVersions", session.calls[0][2]["params"]["fields"].split(","))
+        self.assertEqual(issue["fix_versions"], ["27.04"])
 
     def test_create_issue_sets_parent_epic(self):
         session = FakeSession()
