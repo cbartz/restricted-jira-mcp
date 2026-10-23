@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 import re
 
 import requests
@@ -346,34 +346,32 @@ class JiraClient:
     def sprints(self, project_key: str) -> dict[str, Any]:
         """List active and future sprints on the project's scrum boards.
 
-        Boards are found through their filter, which can span projects, so
-        only boards located in an allowlisted project are read.
+        Boards are found through their filter, which can span projects, and a
+        board also lists other boards' sprints whose issues match that filter,
+        so only sprints originating on an allowlisted board are returned.
         """
         project = self.policy.ensure_project_allowed(project_key)
-        response = self.session.get(
-            self._url("/rest/agile/1.0/board"),
-            params={"projectKeyOrId": project, "type": "scrum", "maxResults": 50},
-            timeout=30,
+        boards = list(
+            self._agile_values("/rest/agile/1.0/board", {"projectKeyOrId": project, "type": "scrum"})
         )
+        board_allowed = {board.get("id"): self._board_allowed(board) for board in boards}
         sprints: dict[int, dict[str, Any]] = {}
-        for board in self._json_response(response).get("values", []):
-            if not self._board_allowed(board):
+        for board in boards:
+            if not board_allowed[board.get("id")]:
                 continue
-            response = self.session.get(
-                self._url(f"/rest/agile/1.0/board/{board['id']}/sprint"),
-                params={"state": "active,future", "maxResults": 50},
-                timeout=30,
-            )
-            for sprint in self._json_response(response).get("values", []):
-                sprints.setdefault(
-                    sprint.get("id"),
-                    {
-                        "id": sprint.get("id"),
-                        "name": sprint.get("name"),
-                        "state": sprint.get("state"),
-                        "board": board.get("name"),
-                    },
-                )
+            for sprint in self._agile_values(
+                f"/rest/agile/1.0/board/{int(board['id'])}/sprint", {"state": "active,future"}
+            ):
+                if sprint.get("id") in sprints or not self._origin_board_allowed(
+                    sprint.get("originBoardId"), board_allowed
+                ):
+                    continue
+                sprints[sprint.get("id")] = {
+                    "id": sprint.get("id"),
+                    "name": sprint.get("name"),
+                    "state": sprint.get("state"),
+                    "board": board.get("name"),
+                }
         return {"project_key": project, "sprints": list(sprints.values())}
 
     def move_to_sprint(self, issue_key: str, sprint_id: int | None) -> dict[str, Any]:
@@ -387,14 +385,7 @@ class JiraClient:
             response = self.session.get(
                 self._url(f"/rest/agile/1.0/sprint/{int(sprint_id)}"), timeout=30
             )
-            board_id = self._json_response(response).get("originBoardId")
-            board: dict[str, Any] = {}
-            if board_id is not None:
-                response = self.session.get(
-                    self._url(f"/rest/agile/1.0/board/{int(board_id)}"), timeout=30
-                )
-                board = self._json_response(response)
-            if not self._board_allowed(board):
+            if not self._origin_board_allowed(self._json_response(response).get("originBoardId"), {}):
                 raise PolicyError(f"Sprint {sprint_id} does not belong to an allowlisted project")
             path = f"/rest/agile/1.0/sprint/{int(sprint_id)}/issue"
         response = self.session.post(
@@ -465,6 +456,31 @@ class JiraClient:
             payload = self._json_response(response)
             self._cached_account_id = payload["accountId"]
         return self._cached_account_id
+
+    def _agile_values(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """Yield every value of a paged Agile API listing."""
+        start_at = 0
+        while True:
+            response = self.session.get(
+                self._url(path),
+                params={**params, "startAt": start_at, "maxResults": 50},
+                timeout=30,
+            )
+            payload = self._json_response(response)
+            values = payload.get("values", [])
+            yield from values
+            if payload.get("isLast", True) or not values:
+                return
+            start_at += len(values)
+
+    def _origin_board_allowed(self, board_id: int | None, known: dict[Any, bool]) -> bool:
+        """Report whether a sprint's origin board is allowlisted, caching lookups in known."""
+        if board_id is None:
+            return False
+        if board_id not in known:
+            response = self.session.get(self._url(f"/rest/agile/1.0/board/{int(board_id)}"), timeout=30)
+            known[board_id] = self._board_allowed(self._json_response(response))
+        return known[board_id]
 
     def _board_allowed(self, board: dict[str, Any]) -> bool:
         project_key = (board.get("location") or {}).get("projectKey")

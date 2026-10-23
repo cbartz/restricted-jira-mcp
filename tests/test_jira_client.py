@@ -233,29 +233,43 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(issue["components"], ["Runners"])
 
     def test_sprints_lists_open_sprints_of_allowlisted_boards(self):
-        # A board found through the project can live in another project; its
-        # sprints are left out, and kanban boards are not asked for sprints.
+        # Boards found through the project can live in another project, and a
+        # board's sprint list includes sprints of other boards whose issues
+        # match its filter; only sprints originating on an allowlisted board
+        # are returned. Both listings are followed across pages.
         session = FakeSession()
         session.get_responses = [
-            FakeResponse(200, {"values": [
-                board_payload(1, "ISD board", "ISD"),
-                board_payload(2, "NDA board", "NDA"),
-            ]}),
-            FakeResponse(200, {"values": [
+            FakeResponse(200, {"isLast": False, "values": [board_payload(1, "ISD board", "ISD")]}),
+            FakeResponse(200, {"isLast": True, "values": [board_payload(2, "NDA board", "NDA")]}),
+            FakeResponse(200, {"isLast": False, "values": [
                 {"id": 501, "name": "ISD 27.04", "state": "active", "originBoardId": 1},
-                {"id": 502, "name": "ISD 27.05", "state": "future", "originBoardId": 1},
+                {"id": 601, "name": "NDA secret", "state": "active", "originBoardId": 2},
             ]}),
+            FakeResponse(200, {"isLast": True, "values": [
+                {"id": 502, "name": "ISD 27.05", "state": "future", "originBoardId": 1},
+                {"id": 701, "name": "Other secret", "state": "future", "originBoardId": 3},
+                {"id": 801, "name": "Orphan", "state": "future"},
+            ]}),
+            FakeResponse(200, board_payload(3, "Other board", "NDA")),
         ]
 
         result = client(session).sprints("isd")
 
-        method, url, kwargs = session.calls[0]
-        self.assertTrue(url.endswith("/rest/agile/1.0/board"))
-        self.assertEqual(kwargs["params"]["projectKeyOrId"], "ISD")
-        self.assertEqual(kwargs["params"]["type"], "scrum")
-        self.assertTrue(session.calls[1][1].endswith("/rest/agile/1.0/board/1/sprint"))
-        self.assertEqual(session.calls[1][2]["params"]["state"], "active,future")
-        self.assertEqual(len(session.calls), 2)
+        urls = [(call[1].split("/rest/agile/1.0")[1], (call[2].get("params") or {}).get("startAt")) for call in session.calls]
+        self.assertEqual(
+            urls,
+            [
+                ("/board", 0),
+                ("/board", 1),
+                ("/board/1/sprint", 0),
+                ("/board/1/sprint", 2),
+                ("/board/3", None),
+            ],
+        )
+        board_params = session.calls[0][2]["params"]
+        self.assertEqual(board_params["projectKeyOrId"], "ISD")
+        self.assertEqual(board_params["type"], "scrum")
+        self.assertEqual(session.calls[2][2]["params"]["state"], "active,future")
         self.assertEqual(
             result,
             {

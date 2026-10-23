@@ -141,7 +141,7 @@ Over stdio the agent's machine holds the Jira API token; prefer HTTP when the ag
 - `jira_transitions(issue_key)`
 - `jira_transition_issue(issue_key, transition, resolution=None)`
 - `jira_sprints(project_key)`
-  - Active and future sprints on the project's scrum boards; boards located in a non-allowlisted project are skipped
+  - Active and future sprints on the project's scrum boards; boards located in a non-allowlisted project, and sprints originating on such boards, are left out
 - `jira_move_to_sprint(issue_key, sprint_id=None)`
   - Moves the issue into the sprint, or to the backlog when `sprint_id` is omitted. Sprint ids are global, so the sprint's board must belong to an allowlisted project
 - `jira_add_comment(issue_key, body)`
