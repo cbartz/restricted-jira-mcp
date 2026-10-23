@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 import re
 
 import requests
 
 from .adf import adf_to_text, as_adf
 from .config import JiraConfig
-from .policy import JiraPolicy
+from .policy import JiraPolicy, PolicyError
 
 
 DEFAULT_FIELDS = [
@@ -24,7 +24,15 @@ DEFAULT_FIELDS = [
     "description",
 ]
 
-ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks", "fixVersions"]
+# Fields holding a list of project-scoped {"name": ...} objects, mapped to
+# the key get_issue reports their names under.
+NAMED_LIST_FIELDS = {
+    "fixVersions": "fix_versions",
+    "versions": "affects_versions",
+    "components": "components",
+}
+
+ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks", *NAMED_LIST_FIELDS]
 
 MAX_COMMENTS_PER_PAGE = 50
 DESCRIPTION_EXCERPT_LIMIT = 800
@@ -124,9 +132,8 @@ class JiraClient:
         self.policy.ensure_response_issue_allowed(payload)
         issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
-        issue["fix_versions"] = [
-            version.get("name") for version in payload.get("fields", {}).get("fixVersions") or []
-        ]
+        for field, key in NAMED_LIST_FIELDS.items():
+            issue[key] = [item.get("name") for item in payload.get("fields", {}).get(field) or []]
 
         # Add custom fields view
         custom_fields = self._custom_fields_view(payload.get("fields", {}))
@@ -336,6 +343,64 @@ class JiraClient:
             "to_status": (chosen.get("to") or {}).get("name"),
         }
 
+    def sprints(self, project_key: str) -> dict[str, Any]:
+        """List active and future sprints on the project's scrum boards.
+
+        Boards are found through their filter, which can span projects, and a
+        board also lists other boards' sprints whose issues match that filter,
+        so only sprints originating on an allowlisted board are returned.
+        """
+        project = self.policy.ensure_project_allowed(project_key)
+        boards = list(
+            self._agile_values("/rest/agile/1.0/board", {"projectKeyOrId": project, "type": "scrum"})
+        )
+        board_allowed = {board.get("id"): self._board_allowed(board) for board in boards}
+        sprints: dict[int, dict[str, Any]] = {}
+        for board in boards:
+            if not board_allowed[board.get("id")]:
+                continue
+            for sprint in self._agile_values(
+                f"/rest/agile/1.0/board/{int(board['id'])}/sprint", {"state": "active,future"}
+            ):
+                if sprint.get("id") in sprints or not self._origin_board_allowed(
+                    sprint.get("originBoardId"), board_allowed
+                ):
+                    continue
+                sprints[sprint.get("id")] = {
+                    "id": sprint.get("id"),
+                    "name": sprint.get("name"),
+                    "state": sprint.get("state"),
+                    "board": board.get("name"),
+                }
+        return {"project_key": project, "sprints": list(sprints.values())}
+
+    def move_to_sprint(self, issue_key: str, sprint_id: int | None) -> dict[str, Any]:
+        """Move an issue into a sprint, or to the backlog when sprint_id is None."""
+        resolved_key = self._resolve_issue(issue_key)
+        if sprint_id is None:
+            path = "/rest/agile/1.0/backlog/issue"
+        else:
+            # Sprint ids are global; the sprint's own board decides whether
+            # it belongs to an allowlisted project.
+            response = self.session.get(
+                self._url(f"/rest/agile/1.0/sprint/{int(sprint_id)}"), timeout=30
+            )
+            if not self._origin_board_allowed(self._json_response(response).get("originBoardId"), {}):
+                raise PolicyError(f"Sprint {sprint_id} does not belong to an allowlisted project")
+            path = f"/rest/agile/1.0/sprint/{int(sprint_id)}/issue"
+        response = self.session.post(
+            self._url(path),
+            json={"issues": [resolved_key]},
+            timeout=30,
+        )
+        self._raise_for_status(response)
+        return {
+            "status": "moved",
+            "issue_key": resolved_key,
+            "moved_to": "backlog" if sprint_id is None else "sprint",
+            "sprint_id": sprint_id,
+        }
+
     def add_comment(self, issue_key: str, body: str | dict) -> dict[str, Any]:
         resolved_key = self._resolve_issue(issue_key)
         response = self.session.post(
@@ -391,6 +456,39 @@ class JiraClient:
             payload = self._json_response(response)
             self._cached_account_id = payload["accountId"]
         return self._cached_account_id
+
+    def _agile_values(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """Yield every value of a paged Agile API listing."""
+        start_at = 0
+        while True:
+            response = self.session.get(
+                self._url(path),
+                params={**params, "startAt": start_at, "maxResults": 50},
+                timeout=30,
+            )
+            payload = self._json_response(response)
+            values = payload.get("values", [])
+            yield from values
+            if payload.get("isLast", True) or not values:
+                return
+            start_at += len(values)
+
+    def _origin_board_allowed(self, board_id: int | None, known: dict[Any, bool]) -> bool:
+        """Report whether a sprint's origin board is allowlisted, caching lookups in known."""
+        if board_id is None:
+            return False
+        if board_id not in known:
+            response = self.session.get(self._url(f"/rest/agile/1.0/board/{int(board_id)}"), timeout=30)
+            # A deleted or hidden board cannot be verified, which denies it
+            # rather than failing the whole request.
+            known[board_id] = response.status_code not in (403, 404) and self._board_allowed(
+                self._json_response(response)
+            )
+        return known[board_id]
+
+    def _board_allowed(self, board: dict[str, Any]) -> bool:
+        project_key = (board.get("location") or {}).get("projectKey")
+        return bool(project_key) and project_key.upper() in self.policy.allowed_projects
 
     def _available_transitions(self, resolved_key: str) -> list[dict[str, Any]]:
         response = self.session.get(
@@ -541,13 +639,13 @@ def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
         normalized["priority"] = {"name": normalized["priority"]}
     if isinstance(normalized.get("assignee"), str):
         normalized["assignee"] = {"accountId": normalized["assignee"]}
-    if isinstance(normalized.get("fixVersions"), str):
-        normalized["fixVersions"] = [normalized["fixVersions"]]
-    if isinstance(normalized.get("fixVersions"), list):
-        normalized["fixVersions"] = [
-            {"name": version} if isinstance(version, str) else version
-            for version in normalized["fixVersions"]
-        ]
+    for field in NAMED_LIST_FIELDS:
+        if isinstance(normalized.get(field), str):
+            normalized[field] = [normalized[field]]
+        if isinstance(normalized.get(field), list):
+            normalized[field] = [
+                {"name": item} if isinstance(item, str) else item for item in normalized[field]
+            ]
     if isinstance(normalized.get("parent"), str):
         normalized["parent"] = {"key": normalized["parent"].upper()}
     if isinstance(normalized.get("parent"), dict) and isinstance(normalized["parent"].get("key"), str):
