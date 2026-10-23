@@ -135,18 +135,22 @@ Over stdio the agent's machine holds the Jira API token; prefer HTTP when the ag
   - Supports trailing ORDER BY clause (split out of the wrapped JQL)
 - `jira_create_issue(project_key, issue_type, summary, ..., parent_epic_key=None)`
 - `jira_update_issue(issue_key, fields)`
-  - `fixVersions` accepts a version name or a list of names (`{"fixVersions": ["27.04"]}`). It replaces the whole list, so read the current `fix_versions` from `jira_get_issue` first to add one. Jira resolves the names within the issue's own project.
+  - `fixVersions`, `versions` (affects versions) and `components` each accept a name or a list of names (`{"fixVersions": ["27.04"]}`). A write replaces the whole list, so read the current `fix_versions` / `affects_versions` / `components` from `jira_get_issue` first to add one. Jira resolves the names within the issue's own project.
 - `jira_link_issues(from_issue_key, to_issue_key, link_type="Relates")`
 - `jira_link_types()`
 - `jira_transitions(issue_key)`
 - `jira_transition_issue(issue_key, transition, resolution=None)`
+- `jira_sprints(project_key)`
+  - Active and future sprints on the project's scrum boards; boards located in a non-allowlisted project are skipped
+- `jira_move_to_sprint(issue_key, sprint_id=None)`
+  - Moves the issue into the sprint, or to the backlog when `sprint_id` is omitted. Sprint ids are global, so the sprint's board must belong to an allowlisted project
 - `jira_add_comment(issue_key, body)`
 - `jira_update_comment(issue_key, comment_id, body)`
   - Restricted to comments authored by the configured user (an agent should not rewrite other people's words)
 - `jira_delete_comment(issue_key, comment_id)`
   - Restricted to comments authored by the configured user (an agent should not rewrite other people's words)
 
-Writes are deliberately limited to create, update, transition, comment, and link. This v1 does not support attachments, deletes (including removing an existing link), bulk edits, watchers, worklogs, sprint or affects-version changes, or admin operations.
+Writes are deliberately limited to create, update, transition, comment, and link. This v1 does not support attachments, deletes (including removing an existing link), bulk edits, watchers, worklogs, or admin operations.
 
 ## Body formats
 

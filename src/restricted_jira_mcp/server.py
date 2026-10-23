@@ -108,7 +108,7 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
 
     @mcp.tool()
     def jira_update_issue(issue_key: str, fields: dict[str, Any]) -> dict[str, str]:
-        """Update an allowlisted issue's fields; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported; fixVersions takes version names and replaces the whole list."""
+        """Update an allowlisted issue's fields; description accepts Markdown (headings, lists, bold/italic/code, links, tables) or a raw ADF doc dict; wiki markup is not supported; fixVersions, versions (affects versions) and components take names and replace the whole list; use jira_move_to_sprint for sprints."""
         return client.update_issue(issue_key, fields)
 
     @mcp.tool()
@@ -138,6 +138,16 @@ def _register_tools(mcp: Any, client: JiraClient) -> None:
     ) -> dict[str, str]:
         """Change an allowlisted issue's status by running a workflow transition, named by transition id, transition name, or target status; resolution (e.g. "Won't Do") is set when the transition screen asks for one."""
         return client.transition_issue(issue_key, transition, resolution=resolution)
+
+    @mcp.tool()
+    def jira_sprints(project_key: str) -> dict[str, Any]:
+        """List the active and future sprints on an allowlisted project's scrum boards."""
+        return client.sprints(project_key)
+
+    @mcp.tool()
+    def jira_move_to_sprint(issue_key: str, sprint_id: int | None = None) -> dict[str, Any]:
+        """Move an allowlisted issue into a sprint of an allowlisted project's board (ids from jira_sprints), or to the backlog when sprint_id is omitted."""
+        return client.move_to_sprint(issue_key, sprint_id)
 
     @mcp.tool()
     def jira_add_comment(issue_key: str, body: str | dict) -> dict[str, Any]:

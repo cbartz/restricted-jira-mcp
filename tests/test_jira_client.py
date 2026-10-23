@@ -104,6 +104,10 @@ def comment_payload(comment_id: str, text: str) -> dict[str, Any]:
     }
 
 
+def board_payload(board_id: int, name: str, project: str) -> dict[str, Any]:
+    return {"id": board_id, "name": name, "location": {"type": "project", "projectKey": project}}
+
+
 def transitions_payload() -> dict[str, Any]:
     return {
         "transitions": [
@@ -191,35 +195,141 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(request_json["fields"]["description"], adf_doc("hello"))
 
         with self.assertRaises(PolicyError):
-            client(session).update_issue("ISD-5444", {"components": []})
+            client(session).update_issue("ISD-5444", {"environment": "prod"})
 
-    def test_update_issue_sets_fix_versions_by_name(self):
-        # Version names are resolved by Jira within the issue's own project,
-        # so a bare name, a list of names and Jira's own shape all work.
+    def test_update_issue_sets_named_list_fields_by_name(self):
+        # Versions and components are resolved by Jira within the issue's own
+        # project, so a bare name, a list of names and Jira's own shape all work.
         cases = [
             ("27.04", [{"name": "27.04"}]),
             (["27.04", "27.10"], [{"name": "27.04"}, {"name": "27.10"}]),
             ([{"name": "27.04"}], [{"name": "27.04"}]),
             ([], []),
         ]
-        for value, expected in cases:
-            with self.subTest(value=value):
-                session = FakeSession()
+        for field in ("fixVersions", "versions", "components"):
+            for value, expected in cases:
+                with self.subTest(field=field, value=value):
+                    session = FakeSession()
 
-                client(session).update_issue("ISD-5444", {"fixVersions": value})
+                    client(session).update_issue("ISD-5444", {field: value})
 
-                self.assertEqual(session.calls[1][2]["json"]["fields"]["fixVersions"], expected)
+                    self.assertEqual(session.calls[1][2]["json"]["fields"][field], expected)
 
-    def test_get_issue_returns_fix_versions(self):
+    def test_get_issue_returns_named_list_fields(self):
         session = FakeSession()
         payload = issue_payload("ISD-5444", "ISD")
         payload["fields"]["fixVersions"] = [{"id": "100", "name": "27.04"}]
+        payload["fields"]["versions"] = [{"id": "99", "name": "26.10"}]
+        payload["fields"]["components"] = [{"id": "7", "name": "Runners"}]
         session.next_get = FakeResponse(200, payload)
 
         issue = client(session).get_issue("ISD-5444")
 
-        self.assertIn("fixVersions", session.calls[0][2]["params"]["fields"].split(","))
+        requested = session.calls[0][2]["params"]["fields"].split(",")
+        for field in ("fixVersions", "versions", "components"):
+            self.assertIn(field, requested)
         self.assertEqual(issue["fix_versions"], ["27.04"])
+        self.assertEqual(issue["affects_versions"], ["26.10"])
+        self.assertEqual(issue["components"], ["Runners"])
+
+    def test_sprints_lists_open_sprints_of_allowlisted_boards(self):
+        # A board found through the project can live in another project; its
+        # sprints are left out, and kanban boards are not asked for sprints.
+        session = FakeSession()
+        session.get_responses = [
+            FakeResponse(200, {"values": [
+                board_payload(1, "ISD board", "ISD"),
+                board_payload(2, "NDA board", "NDA"),
+            ]}),
+            FakeResponse(200, {"values": [
+                {"id": 501, "name": "ISD 27.04", "state": "active", "originBoardId": 1},
+                {"id": 502, "name": "ISD 27.05", "state": "future", "originBoardId": 1},
+            ]}),
+        ]
+
+        result = client(session).sprints("isd")
+
+        method, url, kwargs = session.calls[0]
+        self.assertTrue(url.endswith("/rest/agile/1.0/board"))
+        self.assertEqual(kwargs["params"]["projectKeyOrId"], "ISD")
+        self.assertEqual(kwargs["params"]["type"], "scrum")
+        self.assertTrue(session.calls[1][1].endswith("/rest/agile/1.0/board/1/sprint"))
+        self.assertEqual(session.calls[1][2]["params"]["state"], "active,future")
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(
+            result,
+            {
+                "project_key": "ISD",
+                "sprints": [
+                    {"id": 501, "name": "ISD 27.04", "state": "active", "board": "ISD board"},
+                    {"id": 502, "name": "ISD 27.05", "state": "future", "board": "ISD board"},
+                ],
+            },
+        )
+
+    def test_move_to_sprint_posts_issue_to_sprint_or_backlog(self):
+        cases = [
+            (501, "/rest/agile/1.0/sprint/501/issue", "sprint"),
+            (None, "/rest/agile/1.0/backlog/issue", "backlog"),
+        ]
+        for sprint_id, path, moved_to in cases:
+            with self.subTest(sprint_id=sprint_id):
+                session = FakeSession()
+                session.get_responses = [
+                    FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                    FakeResponse(200, {"id": 501, "originBoardId": 1}),
+                    FakeResponse(200, board_payload(1, "ISD board", "ISD")),
+                ]
+                session.next_post = FakeResponse(204)
+
+                result = client(session).move_to_sprint("isd-5444", sprint_id)
+
+                method, url, kwargs = session.calls[-1]
+                self.assertEqual(method, "POST")
+                self.assertTrue(url.endswith(path))
+                self.assertEqual(kwargs["json"], {"issues": ["ISD-5444"]})
+                self.assertEqual(result["moved_to"], moved_to)
+
+    def test_move_to_sprint_error_cases(self):
+        # Sprint ids are global, so the sprint's own board must be in an
+        # allowlisted project before the issue is moved into it.
+        cases = [
+            ("sprint on disallowed board", board_payload(2, "NDA board", "NDA")),
+            ("sprint on personal board", {"id": 3, "name": "Mine", "location": {"type": "user"}}),
+        ]
+        for name, board in cases:
+            with self.subTest(name):
+                session = FakeSession()
+                session.get_responses = [
+                    FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                    FakeResponse(200, {"id": 900, "originBoardId": board["id"]}),
+                    FakeResponse(200, board),
+                ]
+                with self.assertRaises(PolicyError):
+                    client(session).move_to_sprint("ISD-5444", 900)
+                self.assertFalse(any(call[0] == "POST" for call in session.calls))
+
+        with self.subTest("sprint without origin board"):
+            session = FakeSession()
+            session.get_responses = [
+                FakeResponse(200, issue_payload("ISD-5444", "ISD")),
+                FakeResponse(200, {"id": 900}),
+            ]
+            with self.assertRaises(PolicyError):
+                client(session).move_to_sprint("ISD-5444", 900)
+            self.assertFalse(any(call[0] == "POST" for call in session.calls))
+
+        with self.subTest("disallowed issue key"):
+            session = FakeSession()
+            with self.assertRaises(PolicyError):
+                client(session).move_to_sprint("NDA-1", 501)
+            self.assertEqual(session.calls, [])
+
+        with self.subTest("disallowed project for sprints"):
+            session = FakeSession()
+            with self.assertRaises(PolicyError):
+                client(session).sprints("NDA")
+            self.assertEqual(session.calls, [])
 
     def test_create_issue_sets_parent_epic(self):
         session = FakeSession()

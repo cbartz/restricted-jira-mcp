@@ -26,8 +26,8 @@ class JiraPolicyTests(unittest.TestCase):
     def test_rejects_unsupported_update_fields(self):
         policy = JiraPolicy.create(("ISD",), allowed_custom_fields=("customfield_12345",))
 
-        with self.assertRaisesRegex(PolicyError, "components"):
-            policy.validate_update_fields({"summary": "x", "components": []})
+        with self.assertRaisesRegex(PolicyError, "environment"):
+            policy.validate_update_fields({"summary": "x", "environment": "prod"})
 
         self.assertEqual(
             policy.validate_update_fields({"customfield_12345": "ok"}),
