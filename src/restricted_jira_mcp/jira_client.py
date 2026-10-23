@@ -24,7 +24,7 @@ DEFAULT_FIELDS = [
     "description",
 ]
 
-ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks"]
+ISSUE_FIELDS = DEFAULT_FIELDS + ["issuelinks", "fixVersions"]
 
 MAX_COMMENTS_PER_PAGE = 50
 DESCRIPTION_EXCERPT_LIMIT = 800
@@ -124,6 +124,9 @@ class JiraClient:
         self.policy.ensure_response_issue_allowed(payload)
         issue = compact_issue(payload, full_description=True)
         issue["links"] = self._visible_links(payload.get("fields", {}).get("issuelinks") or [])
+        issue["fix_versions"] = [
+            version.get("name") for version in payload.get("fields", {}).get("fixVersions") or []
+        ]
 
         # Add custom fields view
         custom_fields = self._custom_fields_view(payload.get("fields", {}))
@@ -538,6 +541,13 @@ def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
         normalized["priority"] = {"name": normalized["priority"]}
     if isinstance(normalized.get("assignee"), str):
         normalized["assignee"] = {"accountId": normalized["assignee"]}
+    if isinstance(normalized.get("fixVersions"), str):
+        normalized["fixVersions"] = [normalized["fixVersions"]]
+    if isinstance(normalized.get("fixVersions"), list):
+        normalized["fixVersions"] = [
+            {"name": version} if isinstance(version, str) else version
+            for version in normalized["fixVersions"]
+        ]
     if isinstance(normalized.get("parent"), str):
         normalized["parent"] = {"key": normalized["parent"].upper()}
     if isinstance(normalized.get("parent"), dict) and isinstance(normalized["parent"].get("key"), str):
