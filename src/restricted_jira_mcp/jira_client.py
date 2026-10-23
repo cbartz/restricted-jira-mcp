@@ -479,7 +479,11 @@ class JiraClient:
             return False
         if board_id not in known:
             response = self.session.get(self._url(f"/rest/agile/1.0/board/{int(board_id)}"), timeout=30)
-            known[board_id] = self._board_allowed(self._json_response(response))
+            # A deleted or hidden board cannot be verified, which denies it
+            # rather than failing the whole request.
+            known[board_id] = response.status_code not in (403, 404) and self._board_allowed(
+                self._json_response(response)
+            )
         return known[board_id]
 
     def _board_allowed(self, board: dict[str, Any]) -> bool:

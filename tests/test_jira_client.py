@@ -281,6 +281,25 @@ class JiraClientTests(unittest.TestCase):
             },
         )
 
+    def test_sprints_skips_sprints_with_unreadable_origin_board(self):
+        # A deleted or hidden origin board cannot be verified, so its sprint
+        # is left out without discarding the rest of the listing.
+        for status in (403, 404):
+            with self.subTest(status=status):
+                session = FakeSession()
+                session.get_responses = [
+                    FakeResponse(200, {"values": [board_payload(1, "ISD board", "ISD")]}),
+                    FakeResponse(200, {"values": [
+                        {"id": 501, "name": "ISD 27.04", "state": "active", "originBoardId": 1},
+                        {"id": 701, "name": "Hidden", "state": "active", "originBoardId": 3},
+                    ]}),
+                    FakeResponse(status),
+                ]
+
+                result = client(session).sprints("ISD")
+
+                self.assertEqual([sprint["id"] for sprint in result["sprints"]], [501])
+
     def test_move_to_sprint_posts_issue_to_sprint_or_backlog(self):
         cases = [
             (501, "/rest/agile/1.0/sprint/501/issue", "sprint"),
