@@ -231,6 +231,8 @@ class CreateServerTests(unittest.TestCase):
                 "jira_link_issues",
                 "jira_link_types",
                 "jira_search",
+                "jira_transition_issue",
+                "jira_transitions",
                 "jira_update_comment",
                 "jira_update_issue",
             ],
