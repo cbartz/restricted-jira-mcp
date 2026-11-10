@@ -1,6 +1,8 @@
-# Runs the HTTP server from a source checkout; `uv run --frozen` syncs .venv to uv.lock on
-# every start, so updating is `git pull` + `systemctl restart`. Replace the placeholders on
-# install (see "Running as a systemd service" in the README).
+# Runs the server from a source checkout; ExecStartPre syncs .venv to uv.lock on every start,
+# so updating is `git pull` + `systemctl restart`. The server runs from .venv directly rather
+# than via `uv run`: a snap-packaged uv moves its children out of this unit's cgroup, which
+# hides their output from `journalctl -u` and leaves them running after `systemctl stop`.
+# Replace the placeholders on install (see the README).
 [Unit]
 Description=Restricted Jira MCP server
 After=network-online.target
@@ -10,7 +12,8 @@ Wants=network-online.target
 User=YOUR_USER
 WorkingDirectory=/path/to/restricted-jira-mcp
 Environment=PYTHONPATH=src
-ExecStart=/path/to/uv run --frozen python -m restricted_jira_mcp.server --transport http --config /etc/restricted-jira-mcp/config.json
+ExecStartPre=/path/to/uv sync --frozen
+ExecStart=/path/to/restricted-jira-mcp/.venv/bin/python -m restricted_jira_mcp.server --transport http --config /etc/restricted-jira-mcp/config.json
 # Also covers a bind address that does not exist yet at boot, such as an LXD bridge.
 Restart=on-failure
 RestartSec=5
