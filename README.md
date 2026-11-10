@@ -81,6 +81,20 @@ To reach a server bound to 127.0.0.1 from a remote host instead, use an SSH tunn
 ssh -N -L 8000:127.0.0.1:8000 <host>
 ```
 
+### Running as a systemd service
+
+`contrib/systemd/restricted-jira-mcp.service` runs the HTTP server from this checkout as your user and starts it at boot. Install it from the checkout, filling in the placeholders:
+
+```bash
+sed -e "s|YOUR_USER|$USER|" -e "s|/path/to/restricted-jira-mcp|$PWD|" -e "s|/path/to/uv|$(command -v uv)|" \
+  contrib/systemd/restricted-jira-mcp.service | sudo tee /etc/systemd/system/restricted-jira-mcp.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now restricted-jira-mcp
+journalctl -u restricted-jira-mcp -f
+```
+
+`uv run --frozen` syncs `.venv` to `uv.lock` on every start, so an update is `git pull` followed by `sudo systemctl restart restricted-jira-mcp`. Whatever is checked out goes live on restart. For a shared deployment, prefer a dedicated Unix user (see [Target deployment](#target-deployment)).
+
 ### GitHub Copilot over HTTP
 
 Put the entry in the VM's `~/.copilot/mcp-config.json`. Prefer editing that file over Copilot's setup form, and keep exactly one `restricted-jira` entry across it and any workspace `.mcp.json` / `.github/mcp.json`:

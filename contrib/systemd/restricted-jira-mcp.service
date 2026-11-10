@@ -1,0 +1,19 @@
+# Runs the HTTP server from a source checkout; `uv run --frozen` syncs .venv to uv.lock on
+# every start, so updating is `git pull` + `systemctl restart`. Replace the placeholders on
+# install (see "Running as a systemd service" in the README).
+[Unit]
+Description=Restricted Jira MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=YOUR_USER
+WorkingDirectory=/path/to/restricted-jira-mcp
+Environment=PYTHONPATH=src
+ExecStart=/path/to/uv run --frozen python -m restricted_jira_mcp.server --transport http --config /etc/restricted-jira-mcp/config.json
+# Also covers a bind address that does not exist yet at boot, such as an LXD bridge.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
