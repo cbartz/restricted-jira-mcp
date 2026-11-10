@@ -93,7 +93,7 @@ sudo systemctl enable --now restricted-jira-mcp
 journalctl -u restricted-jira-mcp -f
 ```
 
-`uv run --frozen` syncs `.venv` to `uv.lock` on every start, so an update is `git pull` followed by `sudo systemctl restart restricted-jira-mcp`. Whatever is checked out goes live on restart. For a shared deployment, prefer a dedicated Unix user (see [Target deployment](#target-deployment)).
+The unit runs `uv sync --frozen` before every start, so an update is `git pull` followed by `sudo systemctl restart restricted-jira-mcp`. Whatever is checked out goes live on restart. For a shared deployment, prefer a dedicated Unix user (see [Target deployment](#target-deployment)).
 
 ### GitHub Copilot over HTTP
 
